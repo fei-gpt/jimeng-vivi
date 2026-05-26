@@ -4,6 +4,7 @@ users.json
 bitable_state.json
 accounts/
 tenants/
+.deploy/
 .quark-codex-profile-*/
 
 # Python/runtime artifacts

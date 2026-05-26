@@ -1,0 +1,32 @@
+services:
+  okivivi-worker:
+    build:
+      context: .
+    container_name: okivivi-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      IMAGE_LIBRARY_DIR: /app/vivi-image
+      SERVER_IMAGE_SOURCE_DIR: /app/vivi-image
+      JIMENG_ACCOUNT_ROOT: /app/accounts/jimeng
+      SCRIPT_AGENT_DOC: /app/deepseek/OKIVIVI-text-zong.md
+      SCRIPT_AGENT_DOCS: /app/deepseek/OKIVIVI-text-zong.md;/app/deepseek/OKIVIVI-text-assistive.md
+    volumes:
+      - ./users.json:/app/users.json
+      - ./bitable_state.json:/app/bitable_state.json
+      - ./vivi-image:/app/vivi-image
+      - ./accounts:/app/accounts
+      - ./tenants:/app/tenants
+      - ./tasks:/app/tasks
+      - ./outputs:/app/outputs
+      - ./logs:/app/logs
+      - ./script_requests:/app/script_requests
+      - ./prompts:/app/prompts
+      - dreamina-home:/root/.dreamina_cli
+      - dreamina-local-share:/root/.local/share/dreamina
+    command: ["python3", "-u", "worker/feishu_worker.py"]
+
+volumes:
+  dreamina-home:
+  dreamina-local-share:
