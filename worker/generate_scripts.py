@@ -150,10 +150,18 @@ def normalize_items(data: List[dict]) -> List[dict]:
         if not script:
             raise ValueError(f"Script item {idx} has empty script.")
         validate_script(script, idx)
+        dialogue_cn = str(
+            item.get("dialogue_cn")
+            or item.get("dialogue_translation")
+            or item.get("dialogue_zh")
+            or item.get("对话中文")
+            or ""
+        ).strip()
         normalized.append(
             {
                 "name": str(item.get("name") or item.get("title") or f"script-{idx}").strip(),
                 "script": script,
+                "dialogue_cn": dialogue_cn,
             }
         )
     return normalized
@@ -202,13 +210,15 @@ def build_user_prompt(count: int, duration: int, brief: str, character_mode: str
 只输出 JSON 数组，不要 Markdown，不要解释。数组中每个元素格式：
 {{
   "name": "short_task_name",
-  "script": "完整分镜脚本"
+  "script": "完整分镜脚本",
+  "dialogue_cn": "只提取 script 中英文对白并翻译为中文；保留说话人；不要翻译人物描述/环境描述/动作描述"
 }}
 
 生成前自检：
 - 如果任意一条只出现 Sunny 或只出现 Bree，请改写为 Vivi。
 - 只有 blue+pink 双形态脚本才允许 Bree 和 Sunny 同时出现。
 - 不要输出编号短口播，不要输出广告口播，不要输出“Caption/CTA/总结/表格”。
+- dialogue_cn 只能包含对白翻译，格式如 “Girl：……\\nVivi：……”，不要写总结。
 {extra}
 """.strip()
 
@@ -327,6 +337,7 @@ def create_task(
         "image_suggestion": variant,
         "image_library": str(image_dir),
         "script_source": "deepseek",
+        "dialogue_translation": str(script_item.get("dialogue_cn") or ""),
         "script_batch_id": batch_id,
         "script_duration": script_duration,
         "character_mode": character_mode,

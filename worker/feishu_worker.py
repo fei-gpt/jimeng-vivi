@@ -172,6 +172,9 @@ def user_workspace_available(api: "FeishuApi", user_ctx: Optional[dict]) -> bool
     state = user_configured_bitable_state(str(ctx.get("owner_open_id") or ""), ctx)
     if not state:
         return False
+    if setting("COMBINED_BITABLE", "1").strip() != "0" and not is_combined_bitable_state(state):
+        log(f"Configured user workspace uses separated tables and needs re-initialization: owner={ctx.get('owner_open_id', '')}")
+        return False
     try:
         ensure_bitable_control_fields(api, state)
         ensure_script_table_fields(api, state)
@@ -690,7 +693,7 @@ class FeishuApi:
 
     def create_review_bitable(self, title: str = "") -> dict:
         folder_token = setting("FEISHU_DOC_FOLDER_TOKEN", "").strip()
-        title = title or setting("FEISHU_BITABLE_TITLE", "即梦视频生成审核表")
+        title = title or setting("FEISHU_BITABLE_TITLE", "即梦视频工作流表")
         payload = {"name": title, "time_zone": "Asia/Shanghai"}
         if folder_token:
             payload["folder_token"] = folder_token
@@ -708,9 +711,37 @@ class FeishuApi:
             raise RuntimeError(f"Feishu bitable create response missing app_token: {data}")
         headers = [
             {"field_name": "任务ID", "type": 1},
-            {"field_name": "文案链接", "type": 1},
-            {"field_name": "文案记录ID", "type": 1},
-            {"field_name": "确认", "type": 1},
+            {"field_name": "文案", "type": 1},
+            {"field_name": "对话中文", "type": 1},
+            {
+                "field_name": "图片",
+                "type": 3,
+                "property": {
+                    "options": [
+                        {"name": "blue", "color": 2},
+                        {"name": "pink", "color": 5},
+                        {"name": "all", "color": 0},
+                    ]
+                },
+            },
+            {
+                "field_name": "模型",
+                "type": 3,
+                "property": {
+                    "options": [
+                        {"name": "seedance2.0", "color": 0},
+                        {"name": "seedance2.0fast", "color": 2},
+                        {"name": "seedance2.0_vip", "color": 3},
+                        {"name": "seedance2.0fast_vip", "color": 4},
+                    ]
+                },
+            },
+            {"field_name": "备注", "type": 1},
+            {
+                "field_name": "确认",
+                "type": 3,
+                "property": {"options": [{"name": "确认", "color": 2}, {"name": "待修改", "color": 5}]},
+            },
             {"field_name": "状态", "type": 1},
             {"field_name": "视频链接", "type": 1},
             {"field_name": "错误原因", "type": 1},
@@ -718,7 +749,7 @@ class FeishuApi:
         table_data = http_json(
             "POST",
             f"{self.base}/open-apis/bitable/v1/apps/{app_token}/tables",
-            {"table": {"name": "视频审核", "default_view_name": "表格", "fields": headers}},
+            {"table": {"name": "工作流", "default_view_name": "表格", "fields": headers}},
             {"Authorization": f"Bearer {self.token()}"},
         )
         if table_data.get("code") != 0:
@@ -726,12 +757,17 @@ class FeishuApi:
         table_id = (table_data.get("data") or {}).get("table_id")
         if not table_id:
             raise RuntimeError(f"Feishu bitable table response missing table_id: {table_data}")
+        self.delete_default_data_tables(app_token, keep_table_id=table_id)
         return {
             "app_token": app_token,
             "table_id": table_id,
             "url": app.get("url") or f"{setting('FEISHU_DOC_BASE', 'https://ncnrqomkm3wb.feishu.cn').rstrip('/')}/base/{app_token}",
             "title": title,
             "created_at": now(),
+            "combined_bitable": True,
+            "script_app_token": app_token,
+            "script_table_id": table_id,
+            "script_url": app.get("url") or f"{setting('FEISHU_DOC_BASE', 'https://ncnrqomkm3wb.feishu.cn').rstrip('/')}/base/{app_token}",
         }
 
     def create_script_bitable(self, title: str = "") -> dict:
@@ -789,6 +825,7 @@ class FeishuApi:
                 {"field_name": "备注", "type": 1},
             ],
         )
+        self.delete_default_data_tables(app_token, keep_table_id=table["table_id"])
         return {
             "script_app_token": app_token,
             "script_table_id": table["table_id"],
@@ -810,6 +847,27 @@ class FeishuApi:
         if not table_id:
             raise RuntimeError(f"Feishu bitable table response missing table_id: {data}")
         return {"table_id": table_id}
+
+    def delete_bitable_table(self, app_token: str, table_id: str) -> None:
+        data = http_json(
+            "DELETE",
+            f"{self.base}/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}",
+            None,
+            {"Authorization": f"Bearer {self.token()}"},
+        )
+        if data.get("code") != 0:
+            raise RuntimeError(f"Failed to delete Feishu bitable table {table_id}: {data}")
+
+    def delete_default_data_tables(self, app_token: str, keep_table_id: str = "") -> None:
+        try:
+            for table in self.list_bitable_tables(app_token):
+                table_id = str(table.get("table_id") or table.get("id") or "")
+                name = str(table.get("name") or table.get("table_name") or "")
+                if table_id and table_id != keep_table_id and name in {"数据表", "Table 1"}:
+                    self.delete_bitable_table(app_token, table_id)
+                    log(f"Deleted default bitable table: {name} {table_id}")
+        except Exception as exc:
+            log(f"Failed to delete default data table for {app_token}: {exc}")
 
     def list_bitable_tables(self, app_token: str) -> List[dict]:
         data = http_json(
@@ -1199,6 +1257,8 @@ def initialize_user_workspace(api: FeishuApi, user_ctx: dict) -> dict:
             try:
                 ensure_bitable_control_fields(api, state)
                 ensure_script_table_fields(api, state)
+                if setting("COMBINED_BITABLE", "1").strip() != "0" and not is_combined_bitable_state(state):
+                    raise RuntimeError("existing workspace uses separated script/video tables")
                 log(
                     "Reused initialized user workspace: "
                     f"open_id={owner_open_id}; tenant_id={current_ctx.get('tenant_id')}; "
@@ -1212,10 +1272,9 @@ def initialize_user_workspace(api: FeishuApi, user_ctx: dict) -> dict:
                 )
 
         stamp = timestamp_slug()
-        video_title = f"{setting('FEISHU_BITABLE_TITLE', '即梦视频生成审核表')}-{stamp}"
-        script_title = f"{setting('FEISHU_SCRIPT_BITABLE_TITLE', '即梦视频文案库')}-{stamp}"
-        state = api.create_review_bitable(video_title)
-        state = ensure_script_bitable(api, {**state, "pending_script_title": script_title})
+        table_title = f"{setting('FEISHU_BITABLE_TITLE', '即梦视频工作流表')}-{stamp}"
+        state = api.create_review_bitable(table_title)
+        state = ensure_script_bitable(api, state)
         ensure_bitable_control_fields(api, state)
         ensure_script_table_fields(api, state)
         updated = update_user_config(
@@ -1241,6 +1300,12 @@ def initialize_user_workspace(api: FeishuApi, user_ctx: dict) -> dict:
 def ensure_script_bitable(api: FeishuApi, state: dict) -> dict:
     if state.get("script_app_token") and state.get("script_table_id"):
         return state
+    if setting("COMBINED_BITABLE", "1").strip() != "0" and state.get("app_token") and state.get("table_id"):
+        state["script_app_token"] = state["app_token"]
+        state["script_table_id"] = state["table_id"]
+        state["script_url"] = state.get("url", "")
+        state["combined_bitable"] = True
+        return state
     script_state = api.create_script_bitable(str(state.get("pending_script_title") or ""))
     state.update(script_state)
     log(f"Created standalone Feishu script bitable: {script_state.get('script_url')}")
@@ -1253,7 +1318,7 @@ def ensure_script_table_fields(api: FeishuApi, state: dict) -> None:
     if not app_token or not table_id:
         return
     existing = {field.get("field_name") for field in api.list_bitable_fields(app_token, table_id)}
-    for field_name in ["任务ID", "文案", "备注"]:
+    for field_name in ["任务ID", "文案", "对话中文", "备注"]:
         if field_name not in existing:
             api.create_bitable_text_field(app_token, table_id, field_name)
             log(f"Created script table field: {field_name}")
@@ -1290,16 +1355,34 @@ def ensure_bitable_control_fields(api: FeishuApi, state: dict) -> None:
     if not app_token or not table_id:
         return
     existing = {field.get("field_name") for field in api.list_bitable_fields(app_token, table_id)}
-    for field_name in ["文案链接", "文案记录ID"]:
+    for field_name in ["任务ID", "文案", "对话中文", "备注", "状态", "视频链接", "错误原因"]:
         if field_name not in existing:
             api.create_bitable_text_field(app_token, table_id, field_name)
             log(f"Created control table field: {field_name}")
-    for field in api.list_bitable_fields(app_token, table_id):
-        if field.get("field_name") == "图片":
-            field_id = field.get("field_id")
-            if field_id:
-                api.delete_bitable_field(app_token, table_id, field_id)
-                log("Deleted control table field: 图片")
+    if "确认" not in existing:
+        api.create_bitable_choice_field(
+            app_token,
+            table_id,
+            "确认",
+            [{"name": "确认", "color": 2}, {"name": "待修改", "color": 5}],
+        )
+        log("Created control table field: 确认")
+    if "图片" not in existing:
+        api.create_bitable_image_choice_field(app_token, table_id)
+        log("Created control table field: 图片")
+    if "模型" not in existing:
+        api.create_bitable_choice_field(
+            app_token,
+            table_id,
+            "模型",
+            [
+                {"name": "seedance2.0", "color": 0},
+                {"name": "seedance2.0fast", "color": 2},
+                {"name": "seedance2.0_vip", "color": 3},
+                {"name": "seedance2.0fast_vip", "color": 4},
+            ],
+        )
+        log("Created control table field: 模型")
     ensure_bitable_reverse_task_sort(api, app_token, table_id, "control table")
 
 
@@ -1328,6 +1411,17 @@ def bitable_record_url(state: dict, table_id: str, record_id: str) -> str:
         token = state.get("script_app_token") or state.get("app_token", "")
         base_url = f"{setting('FEISHU_DOC_BASE', 'https://ncnrqomkm3wb.feishu.cn').rstrip('/')}/base/{token}"
     return f"{base_url}?table={table_id}&record={record_id}"
+
+
+def is_combined_bitable_state(state: dict) -> bool:
+    return bool(
+        state.get("app_token")
+        and state.get("table_id")
+        and state.get("script_app_token")
+        and state.get("script_table_id")
+        and state.get("app_token") == state.get("script_app_token")
+        and state.get("table_id") == state.get("script_table_id")
+    )
 
 
 def normalize_dedupe_text(value: str) -> str:
@@ -1366,6 +1460,8 @@ def find_duplicate_script_record(api: FeishuApi, state: dict, task_id: str, prom
 
 
 def find_duplicate_review_record(api: FeishuApi, state: dict, task_id: str, script_record_id: str) -> Optional[dict]:
+    if is_combined_bitable_state(state):
+        return None
     app_token = state.get("app_token")
     table_id = state.get("table_id")
     if not app_token or not table_id:
@@ -1404,6 +1500,7 @@ def create_script_record(task: dict, api: FeishuApi, prompt: str, state: dict) -
         {
             "任务ID": task["task_id"],
             "文案": prompt,
+            "对话中文": task.get("dialogue_translation") or "",
             "图片": task.get("image_suggestion") or task.get("image_variant") or "",
             "模型": normalize_model(task.get("model_version")),
             "确认": "",
@@ -1420,6 +1517,16 @@ def create_script_record(task: dict, api: FeishuApi, prompt: str, state: dict) -
 def create_review_record(task: dict, api: FeishuApi, prompt: str) -> dict:
     state = ensure_review_bitable(api, task)
     script_record = create_script_record(task, api, prompt, state)
+    if is_combined_bitable_state(state):
+        record_id = script_record["record_id"]
+        return {
+            **state,
+            "record_id": record_id,
+            "record_url": script_record["record_url"],
+            "script_record_id": record_id,
+            "script_record_url": script_record["record_url"],
+            "deduped": bool(script_record.get("deduped")),
+        }
     existing_review = find_duplicate_review_record(api, state, task["task_id"], script_record["record_id"])
     if existing_review:
         record_id = existing_review["record_id"]
@@ -1462,6 +1569,13 @@ def ensure_script_review_record(task: dict, api: FeishuApi) -> None:
     task["script_bitable_table_id"] = state.get("script_table_id", "")
     task["script_bitable_record_id"] = script_record["record_id"]
     task["script_bitable_record_url"] = script_record["record_url"]
+    if is_combined_bitable_state(state):
+        task["review_bitable_app_token"] = state.get("app_token", "")
+        task["review_bitable_table_id"] = state.get("table_id", "")
+        task["review_bitable_record_id"] = script_record["record_id"]
+        task["review_bitable_url"] = state.get("url", "")
+        task["review_bitable_record_url"] = script_record["record_url"]
+        task["review_auto_scan_enabled"] = True
     task["script_review_status"] = "waiting"
     task["deduped_script_record"] = bool(script_record.get("deduped"))
     task["review_doc_url"] = script_record["record_url"]
@@ -1609,7 +1723,7 @@ def import_bitable_task(api: FeishuApi, task_id: str, user_ctx: Optional[dict] =
         "image_library": (user_ctx or {}).get("image_library") or setting("IMAGE_LIBRARY_DIR", str(ROOT / "vivi-image")),
         "duration": clamp_duration(setting("DEFAULT_DURATION", "15")),
         "ratio": setting("DEFAULT_RATIO", "9:16"),
-        "model_version": normalize_model(script_fields.get("模型") or setting("DEFAULT_MODEL", "seedance2.0fast_vip")),
+        "model_version": normalize_model(script_fields.get("模型") or fields.get("模型") or setting("DEFAULT_MODEL", "seedance2.0fast_vip")),
         "video_resolution": setting("DEFAULT_RESOLUTION", "720p"),
         "jimeng_account": (user_ctx or {}).get("jimeng_account") or setting("DEFAULT_JIMENG_ACCOUNT", ""),
         "tenant_id": seed_task.get("tenant_id", ""),
@@ -1856,12 +1970,12 @@ def refresh_prompt_from_review_doc(task: dict, api: FeishuApi) -> None:
             task["script_bitable_table_id"] = script_table_id
             task["script_bitable_record_id"] = script_record_id
             task["script_bitable_record_url"] = str(fields.get("文案链接") or task.get("script_bitable_record_url") or "")
-            script_model_choice = bitable_choice_text(script_fields.get("模型"))
+            script_model_choice = bitable_choice_text((script_fields or fields).get("模型"))
             if script_model_choice:
                 task["model_version"] = normalize_model(script_model_choice)
         selected_images = list(task.get("images") or [])
         if not selected_images:
-            script_image_choice = bitable_choice_text(script_fields.get("图片"))
+            script_image_choice = bitable_choice_text((script_fields or fields).get("图片"))
             selected_images = resolve_selected_images(script_image_choice, task)
             if selected_images:
                 task["images"] = selected_images
@@ -1870,7 +1984,7 @@ def refresh_prompt_from_review_doc(task: dict, api: FeishuApi) -> None:
         if not selected_images:
             task["review_doc_synced_at"] = now()
             task["_review_not_confirmed"] = True
-            log(f"Task confirmed but script table image selection is empty, ignored silently: {task.get('task_id')}")
+            log(f"Task confirmed but workflow table image selection is empty, ignored silently: {task.get('task_id')}")
             return
         content = str(
             script_fields.get("文案")
@@ -1882,7 +1996,7 @@ def refresh_prompt_from_review_doc(task: dict, api: FeishuApi) -> None:
             or ""
         ).strip()
         if not content:
-            raise RuntimeError(f"Feishu bitable 文案库/控制表 文案 is empty: {record_id}")
+            raise RuntimeError(f"Feishu bitable 工作流表 文案 is empty: {record_id}")
         prompt_file = Path(task["prompt_file"])
         prompt_file.write_text(content + "\n", encoding="utf-8")
         task["review_prompt_source"] = "script_table"
@@ -1985,10 +2099,14 @@ def review_card(task: dict) -> dict:
         image_lines = f"待选: {suggestion}"
     script_url = task.get("script_bitable_record_url") or ""
     review_url = task.get("review_bitable_record_url") or task.get("review_doc_url") or task.get("review_bitable_url") or ""
-    script_line = f"[文案库]({script_url})" if script_url else "文案库失败"
-    review_line = f"[控制表]({review_url})" if review_url else "控制表失败"
+    if script_url and review_url and script_url == review_url:
+        script_line = f"[工作流表]({script_url})"
+        review_line = ""
+    else:
+        script_line = f"[文案表]({script_url})" if script_url else "文案表失败"
+        review_line = f" | [视频表]({review_url})" if review_url else ""
     if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id"):
-        review_note = "文案和图片已在文案库确认；视频审核表只需将“确认”列选择为“确认”。"
+        review_note = "在同一张工作流表中确认文案、图片和模型；选择“确认”后自动生成。"
     else:
         review_note = f"写入第 {task.get('review_doc_row_index', '?')} 行；确认后生成。"
     return {
@@ -1998,7 +2116,7 @@ def review_card(task: dict) -> dict:
             "template": "blue",
         },
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**参数** {params}\n**图片** {image_lines}\n{script_line} | {review_line}"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**参数** {params}\n**图片** {image_lines}\n{script_line}{review_line}"}},
             {
                 "tag": "note",
                 "elements": [
@@ -2015,7 +2133,7 @@ def review_card(task: dict) -> dict:
 def script_review_card(task: dict) -> dict:
     task_id = task["task_id"]
     script_url = task.get("script_bitable_record_url") or task.get("review_doc_url") or ""
-    script_line = f"[打开文案库审核文案]({script_url})" if script_url else "文案库记录创建失败，请查看 worker 日志。"
+    script_line = f"[打开工作流表审核文案]({script_url})" if script_url else "工作流表记录创建失败，请查看 worker 日志。"
     params = " | ".join(
         [
             str(task.get("model_version") or "-"),
@@ -2043,7 +2161,7 @@ def script_review_card(task: dict) -> dict:
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": "请先在文案库修改文案、确认“图片”单选框，并将“确认”列选择为“确认”。之后才会进入视频生成审核表。",
+                        "content": "请在工作流表中修改文案、确认“图片”和“模型”，并将“确认”列选择为“确认”。",
                     }
                 ],
             },
@@ -2066,7 +2184,7 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                     "tag": "lark_md",
                     "content": (
                         "**选择模块后点击生成**\n"
-                        "生成后先写入文案库；在文案库确认文案和图片后，才进入视频生成审核表。"
+                        "生成后写入工作流表；在表中确认文案、图片和模型后自动生成视频。"
                     ),
                 },
             },
@@ -2142,7 +2260,7 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": "生成后先写入文案库；请在文案库确认文案和图片后，再进入视频审核表确认生成。",
+                        "content": "生成后写入工作流表；在同一张表中确认文案、图片和模型后自动生成视频。",
                     }
                 ],
             },
@@ -2163,7 +2281,7 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": "把已经写好的完整分镜文案粘贴到下方，提交后会直接写入文案库。",
+                    "content": "把已经写好的完整分镜文案粘贴到下方，提交后会直接写入工作流表。",
                 },
             },
             {
@@ -2232,7 +2350,7 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "tag": "button",
                         "name": "manual_prompt_submit",
                         "action_type": "form_submit",
-                        "text": {"tag": "plain_text", "content": "上传到文案库"},
+                        "text": {"tag": "plain_text", "content": "上传到工作流表"},
                         "type": "primary",
                         "value": {"action": "manual_prompt_submit", **card_user_value(user_ctx)},
                     },
@@ -2243,7 +2361,7 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": "上传后仍需在文案库选择图片并将“确认”列改为“确认”。选择 2 条时，请用单独一行 --- 分隔两条文案。",
+                        "content": "上传后仍需在工作流表选择图片并将“确认”列改为“确认”。选择 2 条时，请用单独一行 --- 分隔两条文案。",
                     }
                 ],
             },
@@ -2266,7 +2384,7 @@ def workspace_setup_card(user_ctx: Optional[dict] = None) -> dict:
                     "tag": "lark_md",
                     "content": (
                         "**首次使用只需要点一次。**\n"
-                        "我会自动为你创建并绑定：文案库、视频生成审核表、个人任务目录。"
+                        "我会自动为你创建并绑定：工作流表、个人任务目录。"
                     ),
                 },
             },
@@ -3060,7 +3178,7 @@ def run_generation(task: dict, api: FeishuApi) -> None:
                 task["review_bitable_app_token"],
                 task["review_bitable_table_id"],
                 task["review_bitable_record_id"],
-                {"视频链接": video_url, "错误原因": ""},
+                {"状态": "success", "视频链接": video_url, "错误原因": ""},
             )
         except Exception as exc:
             log(f"Failed to write video link to bitable for {task_id}: {exc}")
@@ -3348,6 +3466,16 @@ class Worker:
             self._running_lanes[lane] = task_id
             self._running.add(task_id)
         move_task(path, "running", task)
+        if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id"):
+            try:
+                self.api.update_bitable_record(
+                    task["review_bitable_app_token"],
+                    task["review_bitable_table_id"],
+                    task["review_bitable_record_id"],
+                    {"状态": "running", "错误原因": ""},
+                )
+            except Exception as exc:
+                log(f"Failed to write running status to workflow table for {task_id}: {exc}")
         mode = "VIP 并发通道" if model_allows_parallel(model) else "普通模型单并发队列"
         notify_task_text(self.api, task, f"▶️ 已通过审核，开始生成: {task_id}\n即梦账号: {account}\n模型: {model}\n队列: {mode}")
         thread = threading.Thread(target=self._run_generation_safe, args=(task,), daemon=True)
@@ -3535,7 +3663,7 @@ class Worker:
             script_table_id = str(user_ctx.get("script_table_id") or "")
             video_app_token = str(user_ctx.get("video_app_token") or "")
             video_table_id = str(user_ctx.get("video_table_id") or "")
-            if owner_open_id and not (script_app_token and script_table_id and video_app_token and video_table_id):
+            if owner_open_id and not user_workspace_available(self.api, user_ctx):
                 raise RuntimeError("请先点击初始化工作区，再使用文案生成。")
             notify_text(
                 self.api,
@@ -4009,10 +4137,15 @@ def start_feishu_ws(worker: Worker) -> None:
                     initialized = initialize_user_workspace(worker.api, user_ctx)
                     state = initialized
                     title = "✅ 已复用你的 OKIVIVI 工作区。" if state.get("reused") else "✅ 你的 OKIVIVI 工作区已初始化完成。"
+                    same_table = state.get("script_url") == state.get("url")
+                    table_lines = (
+                        f"工作流表：{state.get('url') or state.get('script_url') or '(empty)'}"
+                        if same_table
+                        else f"文案表：{state.get('script_url') or '(empty)'}\n视频表：{state.get('url') or '(empty)'}"
+                    )
                     message = (
                         f"{title}\n\n"
-                        f"文案库：{state.get('script_url') or '(empty)'}\n"
-                        f"视频审核表：{state.get('url') or '(empty)'}\n\n"
+                        f"{table_lines}\n\n"
                         "之后输入 1 生成文案，或输入 2 上传文案。"
                     )
                     notify_text(worker.api, message, owner_open_id)
@@ -4029,6 +4162,15 @@ def start_feishu_ws(worker: Worker) -> None:
             })
         if value and value.get("action") in {"prompt_generate", "prompt_form_submit"}:
             user_ctx = card_user_context(value)
+            owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
+            if owner_open_id and not user_workspace_available(worker.api, user_ctx):
+                notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
+                return card_response({
+                    "toast": {
+                        "type": "error",
+                        "content": "请先初始化单表工作区，再提交文案生成。",
+                    }
+                })
             count = int(value.get("count") or 1)
             script_duration = int(value.get("script_duration") or 15)
             character_mode = str(value.get("character_mode") or "single_vivi")
@@ -4051,6 +4193,15 @@ def start_feishu_ws(worker: Worker) -> None:
             })
         if value and value.get("action") == "manual_prompt_submit":
             user_ctx = card_user_context(value)
+            owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
+            if owner_open_id and not user_workspace_available(worker.api, user_ctx):
+                notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
+                return card_response({
+                    "toast": {
+                        "type": "error",
+                        "content": "请先初始化单表工作区，再上传文案。",
+                    }
+                })
             prompt = str(value.get("manual_prompt") or "").strip()
             note = str(value.get("manual_note") or "").strip()
             count = int(value.get("manual_count") or 1)
@@ -4070,7 +4221,7 @@ def start_feishu_ws(worker: Worker) -> None:
                 return card_response({
                     "toast": {
                         "type": "success",
-                        "content": f"已上传到文案库: {len(tasks)} 条",
+                        "content": f"已上传到工作流表: {len(tasks)} 条",
                     }
                 })
             except Exception as exc:
