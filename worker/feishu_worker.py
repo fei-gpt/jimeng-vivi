@@ -1,5 +1,6 @@
 ﻿#!/usr/bin/env python3
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -31,6 +32,8 @@ REVIEW_TABLE_STATE = ROOT / "review_table_state.json"
 BITABLE_STATE = ROOT / "bitable_state.json"
 USERS_CONFIG = ROOT / "users.json"
 WORKSPACE_INIT_LOCK = threading.Lock()
+ACTION_DEDUPE_LOCK = threading.Lock()
+ACTION_DEDUPE: Dict[str, float] = {}
 
 MODEL_OPTIONS = [
     ("Seedance 2.0", "seedance2.0"),
@@ -195,6 +198,18 @@ def log(message: str) -> None:
     print(line, flush=True)
     with (LOGS / "worker.log").open("a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def action_seen_recently(key: str, ttl_seconds: int = 180) -> bool:
+    now_ts = time.time()
+    with ACTION_DEDUPE_LOCK:
+        for cached_key, cached_at in list(ACTION_DEDUPE.items()):
+            if now_ts - cached_at > ttl_seconds:
+                ACTION_DEDUPE.pop(cached_key, None)
+        if key in ACTION_DEDUPE:
+            return True
+        ACTION_DEDUPE[key] = now_ts
+        return False
 
 
 def notify_text(api: "FeishuApi", text: str, open_id: str = "") -> None:
@@ -2317,24 +2332,17 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": "把已经写好的完整分镜文案粘贴到下方，提交后会直接写入工作流表。",
+                    "content": (
+                        "**批量粘贴完整分镜文案。**\n"
+                        "多条文案请用单独一行 `&` 分隔；系统会按 `&` 自动判断文案条数。\n"
+                        "示例：第一条完整分镜\\n&\\n第二条完整分镜"
+                    ),
                 },
             },
             {
                 "tag": "form",
                 "name": "manual_prompt_form",
                 "elements": [
-                    {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "条数"},
-                        "initial_option": "1",
-                        "name": "manual_count",
-                        "required": True,
-                        "options": [
-                            {"text": {"tag": "plain_text", "content": "1 条"}, "value": "1"},
-                            {"text": {"tag": "plain_text", "content": "2 条"}, "value": "2"},
-                        ],
-                    },
                     {
                         "tag": "select_static",
                         "placeholder": {"tag": "plain_text", "content": "视频时长"},
@@ -2371,7 +2379,10 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                     {
                         "tag": "input",
                         "name": "manual_prompt",
-                        "placeholder": {"tag": "plain_text", "content": "粘贴完整分镜文案"},
+                        "placeholder": {
+                            "tag": "plain_text",
+                            "content": "粘贴完整分镜文案；多条文案请用单独一行 & 分隔",
+                        },
                         "default_value": "",
                         "required": True,
                         "multiline": True,
@@ -2397,7 +2408,7 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": "上传后仍需在工作流表选择图片并将“确认”列改为“确认”。选择 2 条时，请用单独一行 --- 分隔两条文案。",
+                        "content": "上传后仍需在工作流表选择图片并将“确认”列改为“确认”。多条文案请用单独一行 & 分隔。",
                     }
                 ],
             },
@@ -3567,7 +3578,7 @@ class Worker:
         self,
         prompt: str,
         note: str = "",
-        count: int = 1,
+        count: Optional[int] = None,
         duration: int = 15,
         character_mode: str = "single_vivi",
         model_version: str = "",
@@ -3576,11 +3587,10 @@ class Worker:
         prompt = str(prompt or "").strip()
         if not prompt:
             raise RuntimeError("文案输入为空。")
-        count = max(1, min(2, int(count or 1)))
-        prompts = [part.strip() for part in re.split(r"(?m)^---+$", prompt) if part.strip()]
-        if count > 1 and len(prompts) < count:
-            raise RuntimeError("选择 2 条时，请用单独一行 --- 分隔两条完整文案。")
-        prompts = prompts[:count]
+        prompts = [part.strip() for part in re.split(r"(?m)^\s*&\s*$", prompt) if part.strip()]
+        count = len(prompts)
+        if count < 1:
+            raise RuntimeError("没有识别到有效文案。多条文案请用单独一行 & 分隔。")
         duration = clamp_duration(duration)
         model_version = normalize_model(model_version)
         character_mode = str(character_mode or "single_vivi").strip().lower()
@@ -4165,7 +4175,7 @@ def start_feishu_ws(worker: Worker) -> None:
         if value and value.get("action") in {"prompt_generate", "prompt_form_submit"}:
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
-            if owner_open_id and not user_workspace_available(worker.api, user_ctx):
+            if owner_open_id and not user_workspace_ready(user_ctx):
                 notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
                 return card_response({
                     "toast": {
@@ -4178,15 +4188,39 @@ def start_feishu_ws(worker: Worker) -> None:
             character_mode = str(value.get("character_mode") or "single_vivi")
             model_version = str(value.get("model_version") or setting("DEFAULT_MODEL", "seedance2.0fast_vip"))
             brief = str(value.get("brief") or "").strip()
-            worker.generate_scripts(
-                count,
-                min(script_duration, 15),
-                brief,
-                script_duration=script_duration,
-                character_mode=character_mode,
-                model_version=model_version,
-                user_ctx=user_ctx,
+            dedupe_raw = json.dumps(
+                {
+                    "owner": owner_open_id,
+                    "count": count,
+                    "script_duration": script_duration,
+                    "character_mode": character_mode,
+                    "model_version": model_version,
+                    "brief": brief,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
             )
+            dedupe_key = "prompt_generate:" + hashlib.sha256(dedupe_raw.encode("utf-8")).hexdigest()
+            if action_seen_recently(dedupe_key):
+                return card_response({
+                    "toast": {
+                        "type": "success",
+                        "content": "已收到，请勿重复点击",
+                    }
+                })
+
+            def generate_scripts_async() -> None:
+                worker.generate_scripts(
+                    count,
+                    min(script_duration, 15),
+                    brief,
+                    script_duration=script_duration,
+                    character_mode=character_mode,
+                    model_version=model_version,
+                    user_ctx=user_ctx,
+                )
+
+            threading.Thread(target=generate_scripts_async, daemon=True).start()
             return card_response({
                 "toast": {
                     "type": "success",
@@ -4196,7 +4230,7 @@ def start_feishu_ws(worker: Worker) -> None:
         if value and value.get("action") == "manual_prompt_submit":
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
-            if owner_open_id and not user_workspace_available(worker.api, user_ctx):
+            if owner_open_id and not user_workspace_ready(user_ctx):
                 notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
                 return card_response({
                     "toast": {
@@ -4206,34 +4240,52 @@ def start_feishu_ws(worker: Worker) -> None:
                 })
             prompt = str(value.get("manual_prompt") or "").strip()
             note = str(value.get("manual_note") or "").strip()
-            count = int(value.get("manual_count") or 1)
             duration = int(value.get("manual_duration") or 15)
             character_mode = str(value.get("manual_character_mode") or "single_vivi")
             model_version = str(value.get("manual_model_version") or setting("DEFAULT_MODEL", "seedance2.0fast_vip"))
-            try:
-                tasks = worker.submit_manual_prompt(
-                    prompt,
-                    note,
-                    count=count,
-                    duration=duration,
-                    character_mode=character_mode,
-                    model_version=model_version,
-                    user_ctx=user_ctx,
-                )
+            dedupe_raw = json.dumps(
+                {
+                    "owner": owner_open_id,
+                    "prompt": prompt,
+                    "note": note,
+                    "duration": duration,
+                    "character_mode": character_mode,
+                    "model_version": model_version,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            dedupe_key = "manual_prompt:" + hashlib.sha256(dedupe_raw.encode("utf-8")).hexdigest()
+            if action_seen_recently(dedupe_key):
                 return card_response({
                     "toast": {
                         "type": "success",
-                        "content": f"已上传到工作流表: {len(tasks)} 条",
+                        "content": "已收到，请勿重复点击",
                     }
                 })
-            except Exception as exc:
-                log(f"Manual prompt submit failed: {exc}\n{traceback.format_exc()}")
-                return card_response({
-                    "toast": {
-                        "type": "error",
-                        "content": f"文案上传失败: {exc}",
-                    }
-                })
+
+            def submit_manual_prompt_async() -> None:
+                try:
+                    tasks = worker.submit_manual_prompt(
+                        prompt,
+                        note,
+                        duration=duration,
+                        character_mode=character_mode,
+                        model_version=model_version,
+                        user_ctx=user_ctx,
+                    )
+                    notify_text(worker.api, f"✅ 文案已上传到工作流表: {len(tasks)} 条", owner_open_id)
+                except Exception as exc:
+                    log(f"Manual prompt submit failed: {exc}\n{traceback.format_exc()}")
+                    notify_text(worker.api, f"❌ 文案上传失败\n原因: {exc}", owner_open_id)
+
+            threading.Thread(target=submit_manual_prompt_async, daemon=True).start()
+            return card_response({
+                "toast": {
+                    "type": "success",
+                    "content": "已收到，正在上传到工作流表",
+                }
+            })
         return card_response({
             "toast": {
                 "type": "info",
