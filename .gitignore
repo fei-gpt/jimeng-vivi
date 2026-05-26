@@ -1,0 +1,42 @@
+# Local secrets and user-specific state
+.env
+users.json
+bitable_state.json
+accounts/
+tenants/
+.quark-codex-profile-*/
+
+# Python/runtime artifacts
+.venv/
+__pycache__/
+*.py[cod]
+
+# Logs and process files
+logs/*
+!logs/.gitkeep
+*.log
+*.pid
+
+# Generated queues and outputs
+outputs/*
+!outputs/.gitkeep
+script_requests/*
+!script_requests/.gitkeep
+tasks/*/*
+!tasks/*/.gitkeep
+
+# Local/generated prompt samples
+prompts/generated/
+prompts/manual/
+prompts/bitable/
+
+# Large or non-current reference images
+vivi-image/animation*.jpg
+vivi-image/animation*.png
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+typescript
