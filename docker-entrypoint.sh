@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+
 mkdir -p /app/logs /app/tasks/pending /app/tasks/reviewing /app/tasks/running /app/tasks/done /app/tasks/failed \
   /app/outputs /app/script_requests /app/prompts/generated /app/prompts/manual /app/prompts/bitable \
   /app/accounts /app/tenants /app/vivi-image
