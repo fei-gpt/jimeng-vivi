@@ -1099,6 +1099,27 @@ def configured_bitable_state(task: Optional[dict]) -> dict:
     }
 
 
+def user_configured_bitable_state(open_id: str, configured: dict) -> dict:
+    script_app_token = str(configured.get("script_app_token") or "").strip()
+    script_table_id = str(configured.get("script_table_id") or "").strip()
+    video_app_token = str(configured.get("video_app_token") or "").strip()
+    video_table_id = str(configured.get("video_table_id") or "").strip()
+    if not (script_app_token and script_table_id and video_app_token and video_table_id):
+        return {}
+    base = setting("FEISHU_DOC_BASE", "https://ncnrqomkm3wb.feishu.cn").rstrip("/")
+    return {
+        "app_token": video_app_token,
+        "table_id": video_table_id,
+        "url": str(configured.get("video_url") or f"{base}/base/{video_app_token}"),
+        "script_app_token": script_app_token,
+        "script_table_id": script_table_id,
+        "script_url": str(configured.get("script_url") or f"{base}/base/{script_app_token}"),
+        "tenant_id": str(configured.get("tenant_id") or default_tenant_id(open_id)),
+        "owner_open_id": open_id,
+        "source": "user_config",
+    }
+
+
 def ensure_review_bitable(api: FeishuApi, task: Optional[dict] = None) -> dict:
     configured = configured_bitable_state(task)
     if configured:
@@ -1396,8 +1417,9 @@ def find_bitable_record_by_task_id(api: FeishuApi, task_id: str, task: Optional[
     return None
 
 
-def cleanup_duplicate_bitable_records(api: FeishuApi) -> None:
-    state = ensure_review_bitable(api)
+def cleanup_duplicate_bitable_records_for_state(api: FeishuApi, state: dict) -> None:
+    ensure_bitable_control_fields(api, state)
+    ensure_script_table_fields(api, state)
     script_app_token = state.get("script_app_token") or state.get("app_token")
     script_table_id = state.get("script_table_id")
     if script_app_token and script_table_id:
@@ -1435,6 +1457,44 @@ def cleanup_duplicate_bitable_records(api: FeishuApi) -> None:
                 log(f"Deleted duplicate review record: {record_id}")
             else:
                 seen_reviews.add(key)
+
+
+def cleanup_duplicate_bitable_records(api: FeishuApi) -> None:
+    states: List[dict] = []
+    legacy_state = read_bitable_state()
+    if (
+        legacy_state.get("app_token")
+        and legacy_state.get("table_id")
+        and legacy_state.get("script_app_token")
+        and legacy_state.get("script_table_id")
+    ):
+        states.append({**legacy_state, "source": "legacy_state"})
+
+    for open_id, configured in read_users_config().get("users", {}).items():
+        state = user_configured_bitable_state(str(open_id), configured if isinstance(configured, dict) else {})
+        if state:
+            states.append(state)
+
+    seen_state_keys: set[tuple[str, str, str, str]] = set()
+    for state in states:
+        key = (
+            str(state.get("app_token") or ""),
+            str(state.get("table_id") or ""),
+            str(state.get("script_app_token") or ""),
+            str(state.get("script_table_id") or ""),
+        )
+        if key in seen_state_keys:
+            continue
+        seen_state_keys.add(key)
+        try:
+            cleanup_duplicate_bitable_records_for_state(api, state)
+            log(
+                "Cleaned duplicate bitable records: "
+                f"source={state.get('source')}; owner={state.get('owner_open_id', '')}; "
+                f"script_table={state.get('script_table_id')}; video_table={state.get('table_id')}"
+            )
+        except Exception as exc:
+            log(f"Failed to clean duplicate bitable records for {key}: {exc}")
 
 
 def import_bitable_task(api: FeishuApi, task_id: str, user_ctx: Optional[dict] = None) -> Optional[Path]:
@@ -3235,6 +3295,8 @@ class Worker:
             character_mode = "single_vivi"
         image_suggestion = "all" if character_mode == "bree_sunny" else ""
         user_ctx = user_ctx or user_context("")
+        if user_ctx.get("owner_open_id") and not user_workspace_ready(user_ctx):
+            raise RuntimeError("请先点击初始化工作区，再使用文案输入。")
 
         seed_task = {"tenant_id": user_ctx.get("tenant_id") or setting("DEFAULT_TENANT_ID", "default")}
         prompt_dir = prompt_dir_for_task(seed_task, "manual")
@@ -3326,6 +3388,8 @@ class Worker:
             script_table_id = str(user_ctx.get("script_table_id") or "")
             video_app_token = str(user_ctx.get("video_app_token") or "")
             video_table_id = str(user_ctx.get("video_table_id") or "")
+            if owner_open_id and not (script_app_token and script_table_id and video_app_token and video_table_id):
+                raise RuntimeError("请先点击初始化工作区，再使用文案生成。")
             self.api.text(
                 "📝 开始调用 DeepSeek 生成脚本\n"
                 f"数量: {count}\n"
