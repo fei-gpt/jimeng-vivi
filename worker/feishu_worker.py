@@ -858,9 +858,10 @@ class FeishuApi:
     def delete_default_data_tables(self, app_token: str, keep_table_id: str = "") -> None:
         try:
             for table in self.list_bitable_tables(app_token):
-                table_id = str(table.get("table_id") or table.get("id") or "")
-                name = str(table.get("name") or table.get("table_name") or "")
-                if table_id and table_id != keep_table_id and name in {"数据表", "Table 1"}:
+                table_id = str(table.get("table_id") or table.get("id") or table.get("tableId") or "")
+                name = str(table.get("name") or table.get("table_name") or table.get("tableName") or "").strip()
+                normalized = name.replace(" ", "").lower()
+                if table_id and table_id != keep_table_id and normalized in {"数据表", "table1"}:
                     self.delete_bitable_table(app_token, table_id)
                     log(f"Deleted default bitable table: {name} {table_id}")
         except Exception as exc:
@@ -1325,6 +1326,7 @@ def ensure_script_table_fields(api: FeishuApi, state: dict) -> None:
     table_id = state.get("script_table_id")
     if not app_token or not table_id:
         return
+    api.delete_default_data_tables(app_token, keep_table_id=table_id)
     existing = {field.get("field_name") for field in api.list_bitable_fields(app_token, table_id)}
     for field_name in ["任务ID", "文案", "对话中文", "备注", "状态", "视频链接", "错误原因"]:
         if field_name not in existing:
@@ -1362,6 +1364,7 @@ def ensure_bitable_control_fields(api: FeishuApi, state: dict) -> None:
     table_id = state.get("table_id")
     if not app_token or not table_id:
         return
+    api.delete_default_data_tables(app_token, keep_table_id=table_id)
     existing = {field.get("field_name") for field in api.list_bitable_fields(app_token, table_id)}
     for field_name in ["任务ID", "文案", "对话中文", "备注", "状态", "视频链接", "错误原因"]:
         if field_name not in existing:
