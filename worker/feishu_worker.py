@@ -197,6 +197,30 @@ def log(message: str) -> None:
         f.write(line + "\n")
 
 
+def notify_text(api: "FeishuApi", text: str, open_id: str = "") -> None:
+    target = str(open_id or "").strip()
+    if target:
+        api.text_to_open_id(target, text)
+    else:
+        api.text(text)
+
+
+def notify_card(api: "FeishuApi", card: dict, open_id: str = "") -> None:
+    target = str(open_id or "").strip()
+    if target:
+        api.card_to_open_id(target, card)
+    else:
+        api.card(card)
+
+
+def notify_task_text(api: "FeishuApi", task: Optional[dict], text: str) -> None:
+    notify_text(api, text, str((task or {}).get("owner_open_id") or ""))
+
+
+def notify_task_card(api: "FeishuApi", task: Optional[dict], card: dict) -> None:
+    notify_card(api, card, str((task or {}).get("owner_open_id") or ""))
+
+
 def ensure_dirs() -> None:
     for path in TASK_DIRS.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -2891,7 +2915,7 @@ def run_generation(task: dict, api: FeishuApi) -> None:
         if dreamina_is_waiting(existing_result) and existing_result.get("submit_id"):
             task["submit_id"] = existing_result.get("submit_id")
             (out_dir / "task.json").write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
-            api.text(f"⏳ 继续查询已提交的即梦任务\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}")
+            notify_task_text(api, task, f"⏳ 继续查询已提交的即梦任务\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}")
             result = query_dreamina_until_done(str(task.get("submit_id") or ""), out_dir)
 
     shutil.copyfile(task["prompt_file"], out_dir / "prompt.txt")
@@ -2934,7 +2958,7 @@ def run_generation(task: dict, api: FeishuApi) -> None:
             if dreamina_is_waiting(result):
                 task["submit_id"] = result.get("submit_id")
                 (out_dir / "task.json").write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
-                api.text(f"⏳ 即梦任务已提交，正在排队/生成中\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}")
+                notify_task_text(api, task, f"⏳ 即梦任务已提交，正在排队/生成中\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}")
                 result = query_dreamina_until_done(str(task.get("submit_id") or ""), out_dir)
                 if result.get("gen_status") == "success":
                     break
@@ -2970,7 +2994,7 @@ def run_generation(task: dict, api: FeishuApi) -> None:
         except Exception as exc:
             log(f"Failed to write video link to review doc for {task_id}: {exc}")
             api.append_doc_text(task["review_doc_id"], None, f"视频链接：{video_url}")
-    api.text(f"✅ 即梦视频生成成功\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}\n视频文件: {task['video_file']}")
+    notify_task_text(api, task, f"✅ 即梦视频生成成功\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}\n视频文件: {task['video_file']}")
 
 
 class Worker:
@@ -3140,7 +3164,7 @@ class Worker:
                 if errors:
                     task["fail_reason"] = "\n".join(errors)
                     move_task(claim_path, "failed", task)
-                    self.api.text(f"❌ 任务校验失败: {task.get('task_id')}\n{task['fail_reason']}")
+                    notify_task_text(self.api, task, f"❌ 任务校验失败: {task.get('task_id')}\n{task['fail_reason']}")
                     continue
                 ensure_script_review_record(task, self.api)
                 if task.get("deduped_script_record"):
@@ -3151,7 +3175,7 @@ class Worker:
                     continue
                 task["review_card_sent_at"] = now()
                 move_task(claim_path, "reviewing", task)
-                self.api.card(script_review_card(task))
+                notify_task_card(self.api, task, script_review_card(task))
                 log(f"Sent script review card for {task['task_id']}")
             except Exception as exc:
                 if claim_path.exists():
@@ -3180,7 +3204,7 @@ class Worker:
                             move_task(path, "done", task)
                             log(f"Skipped duplicate review already in Feishu bitable: {task_id}")
                             continue
-                        self.api.card(review_card(task))
+                        notify_task_card(self.api, task, review_card(task))
                         log(f"Sent review card after script confirmation for {task_id}")
                     else:
                         if task.pop("_script_record_missing", False):
@@ -3249,34 +3273,35 @@ class Worker:
             self._running.add(task_id)
         move_task(path, "running", task)
         mode = "VIP 并发通道" if model_allows_parallel(model) else "普通模型单并发队列"
-        self.api.text(f"▶️ 已通过审核，开始生成: {task_id}\n即梦账号: {account}\n模型: {model}\n队列: {mode}")
+        notify_task_text(self.api, task, f"▶️ 已通过审核，开始生成: {task_id}\n即梦账号: {account}\n模型: {model}\n队列: {mode}")
         thread = threading.Thread(target=self._run_generation_safe, args=(task,), daemon=True)
         thread.start()
 
     def approve(self, task_id: str, user_ctx: Optional[dict] = None) -> None:
+        reply_open_id = str((user_ctx or {}).get("owner_open_id") or "")
         if task_id in self._running:
-            self.api.text(f"⚠️ 任务正在生成中，已忽略重复通过: {task_id}")
+            notify_text(self.api, f"⚠️ 任务正在生成中，已忽略重复通过: {task_id}", reply_open_id)
             return
         path = find_task(task_id)
         if not path:
             try:
                 path = import_bitable_task(self.api, task_id, user_ctx)
             except Exception as exc:
-                self.api.text(f"❌ 导入多维表格任务失败，未开始生成\n任务: {task_id}\n原因: {exc}")
+                notify_text(self.api, f"❌ 导入多维表格任务失败，未开始生成\n任务: {task_id}\n原因: {exc}", reply_open_id)
                 log(f"Failed to import bitable task {task_id}: {exc}\n{traceback.format_exc()}")
                 return
             if not path:
-                self.api.text(f"⚠️ 未找到任务: {task_id}")
+                notify_text(self.api, f"⚠️ 未找到任务: {task_id}", reply_open_id)
                 return
         current_status = status_for_task(task_id)
         if current_status in {"running", "done"}:
-            self.api.text(f"⚠️ 任务已处于 {current_status}，不会重复调用即梦: {task_id}")
+            notify_text(self.api, f"⚠️ 任务已处于 {current_status}，不会重复调用即梦: {task_id}", reply_open_id)
             return
         if output_is_success(task_id):
             task = read_task(path)
             task["output_dir"] = str(output_dir_for_task(task))
             move_task(path, "done", task)
-            self.api.text(f"⚠️ 任务已有生成结果，已标记 done，不会重复调用即梦: {task_id}")
+            notify_task_text(self.api, task, f"⚠️ 任务已有生成结果，已标记 done，不会重复调用即梦: {task_id}")
             return
         task = read_task(path)
         try:
@@ -3286,7 +3311,7 @@ class Worker:
                 write_task(current_status or "reviewing", task)
                 return
         except Exception as exc:
-            self.api.text(f"❌ 读取云文档失败，未开始生成\n任务: {task_id}\n原因: {exc}")
+            notify_task_text(self.api, task, f"❌ 读取云文档失败，未开始生成\n任务: {task_id}\n原因: {exc}")
             log(f"Failed to refresh prompt from review doc for {task_id}: {exc}\n{traceback.format_exc()}")
             return
         self.start_generation(path, task)
@@ -3295,7 +3320,9 @@ class Worker:
             running_task_id = next((tid for lane, tid in self._running_lanes.items() if lane.startswith(f"{account}:")), "")
             if running_task_id:
                 queue_size = self.account_queue_size(account)
-                self.api.text(
+                notify_task_text(
+                    self.api,
+                    task,
                     f"⏳ 任务已进入即梦账号队列\n"
                     f"任务: {task_id}\n"
                     f"即梦账号: {account}\n"
@@ -3303,15 +3330,16 @@ class Worker:
                     f"该账号待生成数量: {queue_size}"
                 )
 
-    def reject(self, task_id: str, status: str = "failed") -> None:
+    def reject(self, task_id: str, status: str = "failed", user_ctx: Optional[dict] = None) -> None:
+        reply_open_id = str((user_ctx or {}).get("owner_open_id") or "").strip()
         path = find_task(task_id)
         if not path:
-            self.api.text(f"⚠️ 未找到任务: {task_id}")
+            notify_text(self.api, f"⚠️ 未找到任务: {task_id}", reply_open_id)
             return
         task = read_task(path)
         task["fail_reason"] = "Rejected by reviewer."
         move_task(path, status, task)
-        self.api.text(f"⏹️ 任务已驳回: {task_id}")
+        notify_task_text(self.api, task, f"⏹️ 任务已驳回: {task_id}")
 
     def submit_manual_prompt(
         self,
@@ -3378,7 +3406,7 @@ class Worker:
             ensure_script_review_record(task, self.api)
             task["review_card_sent_at"] = now()
             path = write_task("reviewing", task)
-            self.api.card(script_review_card(task))
+            notify_task_card(self.api, task, script_review_card(task))
             log(f"Manual prompt uploaded to script table: {task_id}; task={path}")
             created.append(task)
         return created
@@ -3433,7 +3461,8 @@ class Worker:
             video_table_id = str(user_ctx.get("video_table_id") or "")
             if owner_open_id and not (script_app_token and script_table_id and video_app_token and video_table_id):
                 raise RuntimeError("请先点击初始化工作区，再使用文案生成。")
-            self.api.text(
+            notify_text(
+                self.api,
                 "📝 开始调用 DeepSeek 生成脚本\n"
                 f"数量: {count}\n"
                 f"文案时长: {script_duration}s\n"
@@ -3441,7 +3470,8 @@ class Worker:
                 f"模型: {model_version}\n"
                 f"租户: {tenant_id}\n"
                 f"即梦账号: {jimeng_account or '(默认)'}\n"
-                f"需求: {brief or '(默认)'}"
+                f"需求: {brief or '(默认)'}",
+                owner_open_id,
             )
             command = [
                 "python3",
@@ -3492,9 +3522,13 @@ class Worker:
             if proc.returncode != 0:
                 raise RuntimeError(f"generate_scripts exited {proc.returncode}: {proc.stdout[-1200:]}")
             created = [line.strip() for line in proc.stdout.splitlines() if line.strip().endswith(".json")]
-            self.api.text(f"✅ DeepSeek 脚本生成完成\n已创建任务: {len(created)}\n即将由队列发送飞书审核卡片。")
+            notify_text(
+                self.api,
+                f"✅ DeepSeek 脚本生成完成\n已创建任务: {len(created)}\n即将由队列发送飞书审核卡片。",
+                owner_open_id,
+            )
         except Exception as exc:
-            self.api.text(f"❌ DeepSeek 脚本生成失败\n原因: {exc}")
+            notify_text(self.api, f"❌ DeepSeek 脚本生成失败\n原因: {exc}", str((user_ctx or {}).get("owner_open_id") or ""))
             log(f"Generate scripts failed: {exc}\n{traceback.format_exc()}")
 
     def _run_generation_safe(self, task: dict) -> None:
@@ -3524,7 +3558,11 @@ class Worker:
                         )
                     except Exception as update_exc:
                         log(f"Failed to clear bitable transient failure for {task_id}: {update_exc}")
-                self.api.text(f"⏳ 即梦账号并发已满，任务将在约 {retry_delay // 60} 分钟后自动重试\n任务: {task_id}")
+                notify_task_text(
+                    self.api,
+                    task,
+                    f"⏳ 即梦账号并发已满，任务将在约 {retry_delay // 60} 分钟后自动重试\n任务: {task_id}",
+                )
                 log(f"Task deferred by Dreamina concurrency limit {task_id}: {exc}")
                 return
             task["fail_reason"] = str(exc)
@@ -3542,7 +3580,7 @@ class Worker:
                     )
                 except Exception as update_exc:
                     log(f"Failed to update bitable failure for {task_id}: {update_exc}")
-            self.api.text(f"❌ 即梦视频生成失败\n任务: {task_id}\n原因: {exc}")
+            notify_task_text(self.api, task, f"❌ 即梦视频生成失败\n任务: {task_id}\n原因: {exc}")
             log(f"Task failed {task_id}: {exc}\n{traceback.format_exc()}")
         finally:
             with self._queue_lock:
@@ -3756,13 +3794,13 @@ def start_feishu_ws(worker: Worker) -> None:
             elif len(parts) >= 2 and parts[0].lower() in {"approve", "通过"}:
                 worker.approve(parts[1], user_ctx)
             elif len(parts) >= 2 and parts[0].lower() in {"reject", "驳回"}:
-                worker.reject(parts[1])
+                worker.reject(parts[1], user_ctx=user_ctx)
             elif len(parts) >= 2 and parts[0].lower() in {"revise", "重写", "重做文案"}:
-                worker.reject(parts[1], "needs_revision")
+                worker.reject(parts[1], "needs_revision", user_ctx=user_ctx)
             elif text.lower() in {"scan", "扫描"}:
                 worker.scan_pending_once()
             elif text in {"队列", "状态", "运行状态", "生成状态"}:
-                worker.api.text(worker.queue_status_text(user_ctx))
+                reply_text(worker.queue_status_text(user_ctx))
             elif text in {"4", "账号管理", "多账号登录", "账号"}:
                 reply_card(account_management_card(user_ctx))
             elif text in {"账号列表", "即梦账号列表"}:
@@ -3803,7 +3841,7 @@ def start_feishu_ws(worker: Worker) -> None:
                     return
                 reply_card(manual_prompt_entry_card(user_ctx))
             elif text in {"3", "动画生成", "生成动画"}:
-                worker.api.text("动画生成模块已预留，等待后续开发接入。")
+                reply_text("动画生成模块已预留，等待后续开发接入。")
             elif text in {"帮助", "help", "菜单", "开始"}:
                 reply_text(welcome_text())
                 if not user_workspace_available(worker.api, user_ctx):
@@ -3814,7 +3852,7 @@ def start_feishu_ws(worker: Worker) -> None:
                     return
                 reply_card(prompt_entry_card(user_ctx))
             elif text:
-                worker.api.text("暂不识别该输入。请只输入数字 1-4，或输入对应字段。\n\n" + welcome_text())
+                reply_text("暂不识别该输入。请只输入数字 1-4，或输入对应字段。\n\n" + welcome_text())
         except Exception as exc:
             log(f"Message handler failed: {exc}\n{traceback.format_exc()}")
 
