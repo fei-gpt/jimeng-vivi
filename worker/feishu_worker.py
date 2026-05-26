@@ -165,6 +165,22 @@ def user_workspace_ready(user_ctx: Optional[dict]) -> bool:
     )
 
 
+def user_workspace_available(api: "FeishuApi", user_ctx: Optional[dict]) -> bool:
+    ctx = user_ctx or {}
+    if not user_workspace_ready(ctx):
+        return False
+    state = user_configured_bitable_state(str(ctx.get("owner_open_id") or ""), ctx)
+    if not state:
+        return False
+    try:
+        ensure_bitable_control_fields(api, state)
+        ensure_script_table_fields(api, state)
+        return True
+    except Exception as exc:
+        log(f"Configured user workspace is unavailable: owner={ctx.get('owner_open_id', '')}; error={exc}")
+        return False
+
+
 def now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -1156,14 +1172,20 @@ def initialize_user_workspace(api: FeishuApi, user_ctx: dict) -> dict:
         current_ctx = user_context(owner_open_id)
         if user_workspace_ready(current_ctx):
             state = user_configured_bitable_state(owner_open_id, current_ctx)
-            ensure_bitable_control_fields(api, state)
-            ensure_script_table_fields(api, state)
-            log(
-                "Reused initialized user workspace: "
-                f"open_id={owner_open_id}; tenant_id={current_ctx.get('tenant_id')}; "
-                f"script={state.get('script_url')}; video={state.get('url')}"
-            )
-            return {**state, "user_ctx": current_ctx, "reused": True}
+            try:
+                ensure_bitable_control_fields(api, state)
+                ensure_script_table_fields(api, state)
+                log(
+                    "Reused initialized user workspace: "
+                    f"open_id={owner_open_id}; tenant_id={current_ctx.get('tenant_id')}; "
+                    f"script={state.get('script_url')}; video={state.get('url')}"
+                )
+                return {**state, "user_ctx": current_ctx, "reused": True}
+            except Exception as exc:
+                log(
+                    "Existing user workspace cannot be reused; creating timestamped replacement: "
+                    f"open_id={owner_open_id}; error={exc}"
+                )
 
         stamp = timestamp_slug()
         video_title = f"{setting('FEISHU_BITABLE_TITLE', '即梦视频生成审核表')}-{stamp}"
@@ -3316,7 +3338,7 @@ class Worker:
             character_mode = "single_vivi"
         image_suggestion = "all" if character_mode == "bree_sunny" else ""
         user_ctx = user_ctx or user_context("")
-        if user_ctx.get("owner_open_id") and not user_workspace_ready(user_ctx):
+        if user_ctx.get("owner_open_id") and not user_workspace_available(self.api, user_ctx):
             raise RuntimeError("请先点击初始化工作区，再使用文案输入。")
 
         seed_task = {"tenant_id": user_ctx.get("tenant_id") or setting("DEFAULT_TENANT_ID", "default")}
@@ -3776,7 +3798,7 @@ def start_feishu_ws(worker: Worker) -> None:
                 account_name = parts[1].strip()
                 reply_text(save_jimeng_login(account_name))
             elif text in {"2", "文案输入", "输入文案"}:
-                if not user_workspace_ready(user_ctx):
+                if not user_workspace_available(worker.api, user_ctx):
                     reply_card(workspace_setup_card(user_ctx))
                     return
                 reply_card(manual_prompt_entry_card(user_ctx))
@@ -3784,10 +3806,10 @@ def start_feishu_ws(worker: Worker) -> None:
                 worker.api.text("动画生成模块已预留，等待后续开发接入。")
             elif text in {"帮助", "help", "菜单", "开始"}:
                 reply_text(welcome_text())
-                if not user_workspace_ready(user_ctx):
+                if not user_workspace_available(worker.api, user_ctx):
                     reply_card(workspace_setup_card(user_ctx))
             elif text in {"1", "文案生成", "生成文案", "生成脚本"}:
-                if not user_workspace_ready(user_ctx):
+                if not user_workspace_available(worker.api, user_ctx):
                     reply_card(workspace_setup_card(user_ctx))
                     return
                 reply_card(prompt_entry_card(user_ctx))
