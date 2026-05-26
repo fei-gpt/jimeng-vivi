@@ -4,6 +4,7 @@ services:
   okivivi-worker:
     build:
       context: .
+      network: host
     container_name: okivivi-worker
     restart: unless-stopped
     env_file:
