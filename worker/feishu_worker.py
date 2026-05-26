@@ -1748,7 +1748,38 @@ IMAGE_GROUPS = {
 
 def image_library_dir(task: dict) -> Path:
     configured = task.get("image_library") or setting("IMAGE_LIBRARY_DIR", str(ROOT / "vivi-image"))
-    return Path(str(configured)).expanduser()
+    path = Path(str(configured)).expanduser()
+    if path.exists():
+        return path
+    fallback = Path(setting("IMAGE_LIBRARY_DIR", str(ROOT / "vivi-image"))).expanduser()
+    return fallback
+
+
+def normalize_image_path(image: Any, task: Optional[dict] = None) -> str:
+    raw = str(image or "").strip()
+    if not raw:
+        return raw
+    path = Path(raw).expanduser()
+    if path.exists():
+        return str(path)
+    name = path.name
+    if name:
+        candidates = [
+            image_library_dir(task or {}) / name,
+            Path(setting("IMAGE_LIBRARY_DIR", str(ROOT / "vivi-image"))).expanduser() / name,
+            ROOT / "vivi-image" / name,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+    return str(path)
+
+
+def normalize_task_images(task: dict) -> None:
+    images = [normalize_image_path(image, task) for image in task.get("images", []) if str(image or "").strip()]
+    if images:
+        seen = set()
+        task["images"] = [item for item in images if not (item in seen or seen.add(item))]
 
 
 def resolve_selected_images(selection: str, task: dict) -> List[str]:
@@ -1758,7 +1789,7 @@ def resolve_selected_images(selection: str, task: dict) -> List[str]:
     lowered = text.lower()
     image_dir = image_library_dir(task)
     if lowered in IMAGE_GROUPS:
-        return [str(image_dir / name) for name in IMAGE_GROUPS[lowered]]
+        return [normalize_image_path(image_dir / name, task) for name in IMAGE_GROUPS[lowered]]
 
     candidates = []
     for part in re.split(r"[\n,，;；]+", text):
@@ -1767,12 +1798,12 @@ def resolve_selected_images(selection: str, task: dict) -> List[str]:
             continue
         key = item.lower()
         if key in IMAGE_GROUPS:
-            candidates.extend(str(image_dir / name) for name in IMAGE_GROUPS[key])
+            candidates.extend(normalize_image_path(image_dir / name, task) for name in IMAGE_GROUPS[key])
             continue
         path = Path(item).expanduser()
         if not path.is_absolute():
             path = image_dir / item
-        candidates.append(str(path))
+        candidates.append(normalize_image_path(path, task))
     seen = set()
     result = []
     for item in candidates:
@@ -2727,6 +2758,7 @@ def find_task(task_id: str) -> Optional[Path]:
 
 def validate_task(task: dict) -> List[str]:
     errors: List[str] = []
+    normalize_task_images(task)
     prompt = Path(task.get("prompt_file", ""))
     if not prompt.exists():
         errors.append(f"Prompt file not found: {prompt}")
@@ -2897,6 +2929,7 @@ def query_dreamina_until_done(submit_id: str, out_dir: Path) -> dict:
 
 def run_generation(task: dict, api: FeishuApi) -> None:
     task_id = task["task_id"]
+    normalize_task_images(task)
     out_dir = output_dir_for_task(task)
     out_dir.mkdir(parents=True, exist_ok=True)
     switch_jimeng_account(str(task.get("jimeng_account") or ""))
