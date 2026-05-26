@@ -1318,7 +1318,7 @@ def ensure_script_table_fields(api: FeishuApi, state: dict) -> None:
     if not app_token or not table_id:
         return
     existing = {field.get("field_name") for field in api.list_bitable_fields(app_token, table_id)}
-    for field_name in ["任务ID", "文案", "对话中文", "备注"]:
+    for field_name in ["任务ID", "文案", "对话中文", "备注", "状态", "视频链接", "错误原因"]:
         if field_name not in existing:
             api.create_bitable_text_field(app_token, table_id, field_name)
             log(f"Created script table field: {field_name}")
@@ -1596,6 +1596,31 @@ def find_bitable_record_by_task_id(api: FeishuApi, task_id: str, task: Optional[
                 continue
             return {**record, "record_id": record_id, "app_token": app_token, "table_id": table_id, "url": state.get("url", "")}
     return None
+
+
+def update_task_workflow_record(api: FeishuApi, task: dict, fields: dict, label: str = "workflow") -> None:
+    updated_keys: set[tuple[str, str, str]] = set()
+    script_key = (
+        str(task.get("script_bitable_app_token") or ""),
+        str(task.get("script_bitable_table_id") or ""),
+        str(task.get("script_bitable_record_id") or ""),
+    )
+    review_key = (
+        str(task.get("review_bitable_app_token") or ""),
+        str(task.get("review_bitable_table_id") or ""),
+        str(task.get("review_bitable_record_id") or ""),
+    )
+    for app_token, table_id, record_id in [script_key, review_key]:
+        if not app_token or not table_id or not record_id:
+            continue
+        key = (app_token, table_id, record_id)
+        if key in updated_keys:
+            continue
+        try:
+            api.update_bitable_record(app_token, table_id, record_id, fields)
+            updated_keys.add(key)
+        except Exception as exc:
+            log(f"Failed to update {label} bitable record for {task.get('task_id')}: {exc}")
 
 
 def cleanup_duplicate_bitable_records_for_state(api: FeishuApi, state: dict) -> None:
@@ -3172,16 +3197,8 @@ def run_generation(task: dict, api: FeishuApi) -> None:
     task["video_file"] = str(out_dir / "video.mp4")
     task["video_url"] = video_url
     write_task("done", task)
-    if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id"):
-        try:
-            api.update_bitable_record(
-                task["review_bitable_app_token"],
-                task["review_bitable_table_id"],
-                task["review_bitable_record_id"],
-                {"状态": "success", "视频链接": video_url, "错误原因": ""},
-            )
-        except Exception as exc:
-            log(f"Failed to write video link to bitable for {task_id}: {exc}")
+    if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
+        update_task_workflow_record(api, task, {"状态": "success", "视频链接": video_url, "错误原因": ""}, "success")
     elif task.get("review_doc_id") and task.get("review_doc_video_cell_id"):
         try:
             api.append_video_link_to_doc(task["review_doc_id"], task["review_doc_video_cell_id"], video_url)
@@ -3466,16 +3483,8 @@ class Worker:
             self._running_lanes[lane] = task_id
             self._running.add(task_id)
         move_task(path, "running", task)
-        if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id"):
-            try:
-                self.api.update_bitable_record(
-                    task["review_bitable_app_token"],
-                    task["review_bitable_table_id"],
-                    task["review_bitable_record_id"],
-                    {"状态": "running", "错误原因": ""},
-                )
-            except Exception as exc:
-                log(f"Failed to write running status to workflow table for {task_id}: {exc}")
+        if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
+            update_task_workflow_record(self.api, task, {"状态": "running", "错误原因": ""}, "running")
         mode = "VIP 并发通道" if model_allows_parallel(model) else "普通模型单并发队列"
         notify_task_text(self.api, task, f"▶️ 已通过审核，开始生成: {task_id}\n即梦账号: {account}\n模型: {model}\n队列: {mode}")
         thread = threading.Thread(target=self._run_generation_safe, args=(task,), daemon=True)
@@ -3754,16 +3763,8 @@ class Worker:
                 running_path = task_path("running", task_id, task)
                 if running_path.exists():
                     running_path.unlink()
-                if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id"):
-                    try:
-                        self.api.update_bitable_record(
-                            task["review_bitable_app_token"],
-                            task["review_bitable_table_id"],
-                            task["review_bitable_record_id"],
-                            {"状态": "", "错误原因": ""},
-                        )
-                    except Exception as update_exc:
-                        log(f"Failed to clear bitable transient failure for {task_id}: {update_exc}")
+                if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
+                    update_task_workflow_record(self.api, task, {"状态": "", "错误原因": ""}, "deferred")
                 notify_task_text(
                     self.api,
                     task,
@@ -3776,16 +3777,8 @@ class Worker:
             running_path = task_path("running", task_id, task)
             if running_path.exists():
                 running_path.unlink()
-            if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id"):
-                try:
-                    self.api.update_bitable_record(
-                        task["review_bitable_app_token"],
-                        task["review_bitable_table_id"],
-                        task["review_bitable_record_id"],
-                        {"状态": "failed", "错误原因": str(exc)},
-                    )
-                except Exception as update_exc:
-                    log(f"Failed to update bitable failure for {task_id}: {update_exc}")
+            if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
+                update_task_workflow_record(self.api, task, {"状态": "failed", "错误原因": str(exc)}, "failure")
             notify_task_text(self.api, task, f"❌ 即梦视频生成失败\n任务: {task_id}\n原因: {exc}")
             log(f"Task failed {task_id}: {exc}\n{traceback.format_exc()}")
         finally:
