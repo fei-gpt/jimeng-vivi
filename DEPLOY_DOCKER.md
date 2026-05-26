@@ -32,8 +32,8 @@ touch users.json bitable_state.json
 ## 3. 启动
 
 ```bash
-docker compose up -d --build
-docker compose logs -f okivivi-worker
+docker-compose -p okivivi up -d --build
+docker-compose -p okivivi logs -f okivivi-worker
 ```
 
 第一次启动时，容器会自动安装即梦 CLI。
@@ -43,7 +43,7 @@ docker compose logs -f okivivi-worker
 如果需要在容器里手动登录即梦：
 
 ```bash
-docker compose exec okivivi-worker bash
+docker-compose -p okivivi exec okivivi-worker bash
 dreamina login --headless
 ```
 
@@ -52,10 +52,10 @@ dreamina login --headless
 ## 5. 常用命令
 
 ```bash
-docker compose ps
-docker compose logs -f okivivi-worker
-docker compose restart okivivi-worker
-docker compose down
+docker-compose -p okivivi ps
+docker-compose -p okivivi logs -f okivivi-worker
+docker-compose -p okivivi restart okivivi-worker
+docker-compose -p okivivi down
 ```
 
-`docker compose down` 只停止 OKIVIVI 这个 compose 项目，不会停止服务器上其他 Docker 应用。
+`docker-compose -p okivivi down` 只停止 OKIVIVI 这个 compose 项目，不会停止服务器上其他 Docker 应用。
