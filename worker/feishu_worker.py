@@ -2783,6 +2783,8 @@ def validate_task(task: dict) -> List[str]:
 def run_command(command: List[str], cwd: Path, log_file: Path) -> subprocess.CompletedProcess:
     log(f"Running: {' '.join(command)}")
     env = os.environ.copy()
+    for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
+        env.pop(key, None)
     extra_path = f"{Path.home() / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
     env["PATH"] = f"{extra_path}:{env.get('PATH', '')}"
     with log_file.open("w", encoding="utf-8") as f:
@@ -2814,6 +2816,46 @@ def dreamina_command() -> str:
     return configured or "dreamina"
 
 
+def dreamina_subprocess_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
+        env.pop(key, None)
+    extra_path = f"{Path.home() / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
+    env["PATH"] = f"{extra_path}:{env.get('PATH', '')}"
+    return env
+
+
+def dreamina_login_valid() -> bool:
+    proc = subprocess.run(
+        [dreamina_command(), "user_credit"],
+        cwd=str(ROOT),
+        env=dreamina_subprocess_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=45,
+    )
+    if proc.returncode == 0:
+        return True
+    log(f"Dreamina login validation failed:\n{proc.stdout}")
+    return False
+
+
+def use_jimeng_profile(script: Path, account: str) -> None:
+    proc = subprocess.run(
+        ["bash", str(script), "use", account],
+        cwd=str(ROOT),
+        env=dreamina_subprocess_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    log(f"Jimeng account switch output for {account}:\n{proc.stdout}")
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to switch Jimeng account to {account}: {proc.stdout}")
+
+
 def switch_jimeng_account(account: str) -> None:
     account = (account or setting("DEFAULT_JIMENG_ACCOUNT", "")).strip()
     if not account:
@@ -2835,19 +2877,20 @@ def switch_jimeng_account(account: str) -> None:
         Path.home() / ".config" / "dreamina_cli",
     ]
     if current_proc.returncode == 0 and current_proc.stdout.strip() == account and any(path.exists() for path in active_paths):
-        log(f"Jimeng account already active; skip switch: {account}")
+        if dreamina_login_valid():
+            log(f"Jimeng account already active; skip switch: {account}")
+            return
+        log(f"Jimeng account marked active but login is invalid; restoring profile: {account}")
+    use_jimeng_profile(script, account)
+    if dreamina_login_valid():
         return
-    proc = subprocess.run(
-        ["bash", str(script), "use", account],
-        cwd=str(ROOT),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=60,
-    )
-    log(f"Jimeng account switch output for {account}:\n{proc.stdout}")
-    if proc.returncode != 0:
-        raise RuntimeError(f"Failed to switch Jimeng account to {account}: {proc.stdout}")
+    fallback = setting("DEFAULT_JIMENG_ACCOUNT", "").strip()
+    if fallback and fallback != account and jimeng_profile_exists(fallback):
+        log(f"Jimeng account {account} is invalid; falling back to {fallback}")
+        use_jimeng_profile(script, fallback)
+        if dreamina_login_valid():
+            return
+    raise RuntimeError(f"Jimeng account has no valid login state: {account}")
 
 
 def extract_json(stdout: str) -> dict:

@@ -91,7 +91,11 @@ backup_active() {
 
 clear_active() {
   for path in "${candidate_paths[@]}"; do
-    rm -rf "$path"
+    if [ -d "$path" ]; then
+      find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    else
+      rm -f "$path"
+    fi
   done
   echo "[OK] cleared active Jimeng login/config paths"
 }
