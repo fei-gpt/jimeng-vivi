@@ -40,7 +40,8 @@ def setting(name: str, default: str = "") -> str:
 
 
 def tenant_slug(value: str) -> str:
-    return slug(str(value or ""), "")
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value or "")).strip("-")
+    return cleaned[:80] or "default"
 
 
 def tenant_root(tenant_id: str) -> Path:
