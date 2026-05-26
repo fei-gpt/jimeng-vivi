@@ -161,7 +161,7 @@ def user_workspace_ready(user_ctx: Optional[dict]) -> bool:
     ctx = user_ctx or {}
     return all(
         str(ctx.get(key) or "").strip()
-        for key in ["script_app_token", "script_table_id", "video_app_token", "video_table_id"]
+        for key in ["script_app_token", "script_table_id"]
     )
 
 
@@ -171,9 +171,6 @@ def user_workspace_available(api: "FeishuApi", user_ctx: Optional[dict]) -> bool
         return False
     state = user_configured_bitable_state(str(ctx.get("owner_open_id") or ""), ctx)
     if not state:
-        return False
-    if setting("COMBINED_BITABLE", "1").strip() != "0" and not is_combined_bitable_state(state):
-        log(f"Configured user workspace uses separated tables and needs re-initialization: owner={ctx.get('owner_open_id', '')}")
         return False
     try:
         ensure_bitable_control_fields(api, state)
@@ -1184,15 +1181,15 @@ def configured_bitable_state(task: Optional[dict]) -> dict:
         return {}
     script_app_token = task.get("user_script_app_token") or task.get("configured_script_app_token")
     script_table_id = task.get("user_script_table_id") or task.get("configured_script_table_id")
-    video_app_token = task.get("user_video_app_token") or task.get("configured_video_app_token")
-    video_table_id = task.get("user_video_table_id") or task.get("configured_video_table_id")
-    if not (script_app_token and script_table_id and video_app_token and video_table_id):
+    video_app_token = task.get("user_video_app_token") or task.get("configured_video_app_token") or script_app_token
+    video_table_id = task.get("user_video_table_id") or task.get("configured_video_table_id") or script_table_id
+    if not (script_app_token and script_table_id):
         return {}
     base = setting("FEISHU_DOC_BASE", "https://ncnrqomkm3wb.feishu.cn").rstrip("/")
     return {
-        "app_token": video_app_token,
-        "table_id": video_table_id,
-        "url": f"{base}/base/{video_app_token}",
+        "app_token": script_app_token,
+        "table_id": script_table_id,
+        "url": f"{base}/base/{script_app_token}",
         "script_app_token": script_app_token,
         "script_table_id": script_table_id,
         "script_url": f"{base}/base/{script_app_token}",
@@ -1205,15 +1202,15 @@ def configured_bitable_state(task: Optional[dict]) -> dict:
 def user_configured_bitable_state(open_id: str, configured: dict) -> dict:
     script_app_token = str(configured.get("script_app_token") or "").strip()
     script_table_id = str(configured.get("script_table_id") or "").strip()
-    video_app_token = str(configured.get("video_app_token") or "").strip()
-    video_table_id = str(configured.get("video_table_id") or "").strip()
-    if not (script_app_token and script_table_id and video_app_token and video_table_id):
+    video_app_token = str(configured.get("video_app_token") or script_app_token or "").strip()
+    video_table_id = str(configured.get("video_table_id") or script_table_id or "").strip()
+    if not (script_app_token and script_table_id):
         return {}
     base = setting("FEISHU_DOC_BASE", "https://ncnrqomkm3wb.feishu.cn").rstrip("/")
     return {
-        "app_token": video_app_token,
-        "table_id": video_table_id,
-        "url": str(configured.get("video_url") or f"{base}/base/{video_app_token}"),
+        "app_token": script_app_token,
+        "table_id": script_table_id,
+        "url": str(configured.get("script_url") or configured.get("video_url") or f"{base}/base/{script_app_token}"),
         "script_app_token": script_app_token,
         "script_table_id": script_table_id,
         "script_url": str(configured.get("script_url") or f"{base}/base/{script_app_token}"),
@@ -1257,8 +1254,19 @@ def initialize_user_workspace(api: FeishuApi, user_ctx: dict) -> dict:
             try:
                 ensure_bitable_control_fields(api, state)
                 ensure_script_table_fields(api, state)
-                if setting("COMBINED_BITABLE", "1").strip() != "0" and not is_combined_bitable_state(state):
-                    raise RuntimeError("existing workspace uses separated script/video tables")
+                if (
+                    current_ctx.get("video_app_token") != state.get("app_token")
+                    or current_ctx.get("video_table_id") != state.get("table_id")
+                    or current_ctx.get("video_url") != state.get("url")
+                ):
+                    current_ctx = update_user_config(
+                        owner_open_id,
+                        {
+                            "video_app_token": state.get("app_token", ""),
+                            "video_table_id": state.get("table_id", ""),
+                            "video_url": state.get("url", ""),
+                        },
+                    )
                 log(
                     "Reused initialized user workspace: "
                     f"open_id={owner_open_id}; tenant_id={current_ctx.get('tenant_id')}; "
@@ -2432,13 +2440,11 @@ def welcome_text() -> str:
     return (
         "欢迎使用 OKIVIVI 机器人。\n"
         "请直接输入数字选择功能：\n"
-        "1：文案生成\n"
-        "2：文案输入\n"
-        "3：动画生成\n"
+        "1：DeepSeek文案生成\n"
+        "2：文案自行输入\n"
+        "3：DeepSeek动画生成\n"
         "4：账号管理\n\n"
-        "也支持输入对应字段：文案生成 / 文案输入 / 动画生成 / 账号管理。\n"
-        "首次使用请点击我发出的“初始化我的工作区”按钮。\n"
-        "查询运行情况请输入：队列 或 状态。"
+        "首次使用请点击我发出的“初始化我的工作区”按钮。"
     )
 
 
@@ -4139,7 +4145,7 @@ def start_feishu_ws(worker: Worker) -> None:
                     message = (
                         f"{title}\n\n"
                         f"{table_lines}\n\n"
-                        "之后输入 1 生成文案，或输入 2 上传文案。"
+                        f"{welcome_text()}"
                     )
                     notify_text(worker.api, message, owner_open_id)
                 except Exception as exc:
