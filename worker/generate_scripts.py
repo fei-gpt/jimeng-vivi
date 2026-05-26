@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -31,7 +32,7 @@ def load_env(path: Path) -> Dict[str, str]:
     return env
 
 
-ENV = load_env(ROOT / ".env")
+ENV = {**load_env(ROOT / ".env"), **os.environ}
 
 
 def setting(name: str, default: str = "") -> str:
@@ -90,7 +91,8 @@ def post_json(url: str, payload: dict, headers: dict, timeout: int = 180) -> dic
     for key, value in headers.items():
         req.add_header(key, value)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")

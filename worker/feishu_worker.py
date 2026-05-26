@@ -3476,6 +3476,8 @@ class Worker:
             command = [
                 "python3",
                 "worker/generate_scripts.py",
+                "--agent-docs",
+                setting("SCRIPT_AGENT_DOCS") or setting("SCRIPT_AGENT_DOC"),
                 "--count",
                 str(count),
                 "--duration",
@@ -3926,34 +3928,29 @@ def start_feishu_ws(worker: Worker) -> None:
         if value and value.get("action") == "setup_workspace":
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
-            try:
-                initialized = initialize_user_workspace(worker.api, user_ctx)
-                state = initialized
-                title = "✅ 已复用你的 OKIVIVI 工作区。" if state.get("reused") else "✅ 你的 OKIVIVI 工作区已初始化完成。"
-                message = (
-                    f"{title}\n\n"
-                    f"文案库：{state.get('script_url') or '(empty)'}\n"
-                    f"视频审核表：{state.get('url') or '(empty)'}\n\n"
-                    "之后输入 1 生成文案，或输入 2 上传文案。"
-                )
-                if owner_open_id:
-                    worker.api.text_to_open_id(owner_open_id, message)
-                else:
-                    worker.api.text(message)
-                return card_response({
-                    "toast": {
-                        "type": "success",
-                        "content": "工作区已初始化",
-                    }
-                })
-            except Exception as exc:
-                log(f"Workspace setup failed: {exc}\n{traceback.format_exc()}")
-                return card_response({
-                    "toast": {
-                        "type": "error",
-                        "content": f"初始化失败: {exc}",
-                    }
-                })
+            def setup_workspace_async() -> None:
+                try:
+                    initialized = initialize_user_workspace(worker.api, user_ctx)
+                    state = initialized
+                    title = "✅ 已复用你的 OKIVIVI 工作区。" if state.get("reused") else "✅ 你的 OKIVIVI 工作区已初始化完成。"
+                    message = (
+                        f"{title}\n\n"
+                        f"文案库：{state.get('script_url') or '(empty)'}\n"
+                        f"视频审核表：{state.get('url') or '(empty)'}\n\n"
+                        "之后输入 1 生成文案，或输入 2 上传文案。"
+                    )
+                    notify_text(worker.api, message, owner_open_id)
+                except Exception as exc:
+                    log(f"Workspace setup failed: {exc}\n{traceback.format_exc()}")
+                    notify_text(worker.api, f"❌ 初始化工作区失败\n原因: {exc}", owner_open_id)
+
+            threading.Thread(target=setup_workspace_async, daemon=True).start()
+            return card_response({
+                "toast": {
+                    "type": "success",
+                    "content": "已开始初始化，完成后会私聊通知你",
+                }
+            })
         if value and value.get("action") in {"prompt_generate", "prompt_form_submit"}:
             user_ctx = card_user_context(value)
             count = int(value.get("count") or 1)
@@ -4065,10 +4062,13 @@ def main() -> int:
     scanner.start()
     review_scanner = threading.Thread(target=reviewing_scanner, args=(worker,), daemon=True)
     review_scanner.start()
-    try:
-        api.text("即梦视频生成 worker 已启动。\n\n" + welcome_text())
-    except Exception as exc:
-        log(f"Startup outbound message skipped: {exc}")
+    if setting("STARTUP_NOTIFY", "0").strip() == "1":
+        try:
+            api.text("即梦视频生成 worker 已启动。\n\n" + welcome_text())
+        except Exception as exc:
+            log(f"Startup outbound message skipped: {exc}")
+    else:
+        log("Startup outbound message disabled.")
     start_feishu_ws(worker)
     return 0
 
