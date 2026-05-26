@@ -2462,6 +2462,58 @@ def welcome_text() -> str:
     )
 
 
+def welcome_card(user_ctx: Optional[dict] = None) -> dict:
+    ctx = user_ctx or user_context("")
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text", "content": "欢迎使用 OKIVIVI 机器人"},
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "请选择要使用的功能。首次使用请先点击我发出的“初始化我的工作区”按钮。",
+                },
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "1 DeepSeek文案生成"},
+                        "type": "primary",
+                        "value": {"action": "menu_prompt_generate", **card_user_value(ctx)},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "2 文案自行输入"},
+                        "type": "primary",
+                        "value": {"action": "menu_manual_prompt", **card_user_value(ctx)},
+                    },
+                ],
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "3 DeepSeek动画生成（待开发）"},
+                        "value": {"action": "menu_animation_todo", **card_user_value(ctx)},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "4 账号管理"},
+                        "value": {"action": "menu_account_management", **card_user_value(ctx)},
+                    },
+                ],
+            },
+        ],
+    }
+
+
 def jimeng_account_help() -> str:
     return (
         "即梦账号管理：\n"
@@ -4061,7 +4113,7 @@ def start_feishu_ws(worker: Worker) -> None:
             elif text in {"3", "动画生成", "生成动画"}:
                 reply_text("动画生成模块已预留，等待后续开发接入。")
             elif text in {"帮助", "help", "菜单", "开始"}:
-                reply_text(welcome_text())
+                reply_card(welcome_card(user_ctx))
                 if not user_workspace_available(worker.api, user_ctx):
                     reply_card(workspace_setup_card(user_ctx))
             elif text in {"1", "文案生成", "生成文案", "生成脚本"}:
@@ -4070,13 +4122,47 @@ def start_feishu_ws(worker: Worker) -> None:
                     return
                 reply_card(prompt_entry_card(user_ctx))
             elif text:
-                reply_text("暂不识别该输入。请只输入数字 1-4，或输入对应字段。\n\n" + welcome_text())
+                reply_text("暂不识别该输入。请点击菜单按钮，或输入数字 1-4。")
+                reply_card(welcome_card(user_ctx))
         except Exception as exc:
             log(f"Message handler failed: {exc}\n{traceback.format_exc()}")
 
     def on_card_action(data: Any) -> Any:
         value = parse_action(data)
         log(f"Feishu card action: {value}")
+        if value and str(value.get("action") or "").startswith("menu_"):
+            user_ctx = card_user_context(value)
+            owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
+            action = str(value.get("action") or "")
+            if action == "menu_prompt_generate":
+                if owner_open_id and not user_workspace_ready(user_ctx):
+                    notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
+                    return card_response({
+                        "toast": {"type": "error", "content": "请先初始化工作区"}
+                    })
+                notify_card(worker.api, prompt_entry_card(user_ctx), owner_open_id)
+                return card_response({
+                    "toast": {"type": "success", "content": "已打开文案生成"}
+                })
+            if action == "menu_manual_prompt":
+                if owner_open_id and not user_workspace_ready(user_ctx):
+                    notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
+                    return card_response({
+                        "toast": {"type": "error", "content": "请先初始化工作区"}
+                    })
+                notify_card(worker.api, manual_prompt_entry_card(user_ctx), owner_open_id)
+                return card_response({
+                    "toast": {"type": "success", "content": "已打开文案输入"}
+                })
+            if action == "menu_animation_todo":
+                return card_response({
+                    "toast": {"type": "info", "content": "DeepSeek动画生成待开发"}
+                })
+            if action == "menu_account_management":
+                notify_card(worker.api, account_management_card(user_ctx), owner_open_id)
+                return card_response({
+                    "toast": {"type": "success", "content": "已打开账号管理"}
+                })
         if value and str(value.get("action") or "").startswith("account_"):
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
@@ -4158,9 +4244,10 @@ def start_feishu_ws(worker: Worker) -> None:
                     message = (
                         f"{title}\n\n"
                         f"{table_lines}\n\n"
-                        f"{welcome_text()}"
+                        "下面是功能菜单："
                     )
                     notify_text(worker.api, message, owner_open_id)
+                    notify_card(worker.api, welcome_card(initialized), owner_open_id)
                 except Exception as exc:
                     log(f"Workspace setup failed: {exc}\n{traceback.format_exc()}")
                     notify_text(worker.api, f"❌ 初始化工作区失败\n原因: {exc}", owner_open_id)
