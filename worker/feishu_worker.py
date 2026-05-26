@@ -30,6 +30,7 @@ TENANTS = ROOT / "tenants"
 REVIEW_TABLE_STATE = ROOT / "review_table_state.json"
 BITABLE_STATE = ROOT / "bitable_state.json"
 USERS_CONFIG = ROOT / "users.json"
+WORKSPACE_INIT_LOCK = threading.Lock()
 
 MODEL_OPTIONS = [
     ("Seedance 2.0", "seedance2.0"),
@@ -166,6 +167,10 @@ def user_workspace_ready(user_ctx: Optional[dict]) -> bool:
 
 def now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def timestamp_slug() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
 def log(message: str) -> None:
@@ -643,9 +648,9 @@ class FeishuApi:
                 break
         return "\n".join(chunk.rstrip("\n") for chunk in chunks).strip()
 
-    def create_review_bitable(self) -> dict:
+    def create_review_bitable(self, title: str = "") -> dict:
         folder_token = setting("FEISHU_DOC_FOLDER_TOKEN", "").strip()
-        title = setting("FEISHU_BITABLE_TITLE", "即梦视频生成审核表")
+        title = title or setting("FEISHU_BITABLE_TITLE", "即梦视频生成审核表")
         payload = {"name": title, "time_zone": "Asia/Shanghai"}
         if folder_token:
             payload["folder_token"] = folder_token
@@ -689,9 +694,9 @@ class FeishuApi:
             "created_at": now(),
         }
 
-    def create_script_bitable(self) -> dict:
+    def create_script_bitable(self, title: str = "") -> dict:
         folder_token = setting("FEISHU_DOC_FOLDER_TOKEN", "").strip()
-        title = setting("FEISHU_SCRIPT_BITABLE_TITLE", "即梦视频文案库")
+        title = title or setting("FEISHU_SCRIPT_BITABLE_TITLE", "即梦视频文案库")
         payload = {"name": title, "time_zone": "Asia/Shanghai"}
         if folder_token:
             payload["folder_token"] = folder_token
@@ -1147,34 +1152,50 @@ def initialize_user_workspace(api: FeishuApi, user_ctx: dict) -> dict:
     owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
     if not owner_open_id:
         raise RuntimeError("无法识别当前用户 open_id，不能初始化个人工作区。")
-    state = api.create_review_bitable()
-    state = ensure_script_bitable(api, state)
-    ensure_bitable_control_fields(api, state)
-    ensure_script_table_fields(api, state)
-    updated = update_user_config(
-        owner_open_id,
-        {
-            "script_app_token": state.get("script_app_token", ""),
-            "script_table_id": state.get("script_table_id", ""),
-            "video_app_token": state.get("app_token", ""),
-            "video_table_id": state.get("table_id", ""),
-            "script_url": state.get("script_url", ""),
-            "video_url": state.get("url", ""),
-            "workspace_initialized_at": now(),
-        },
-    )
-    log(
-        "Initialized user workspace: "
-        f"open_id={owner_open_id}; tenant_id={updated.get('tenant_id')}; "
-        f"script={state.get('script_url')}; video={state.get('url')}"
-    )
-    return {**state, "user_ctx": updated}
+    with WORKSPACE_INIT_LOCK:
+        current_ctx = user_context(owner_open_id)
+        if user_workspace_ready(current_ctx):
+            state = user_configured_bitable_state(owner_open_id, current_ctx)
+            ensure_bitable_control_fields(api, state)
+            ensure_script_table_fields(api, state)
+            log(
+                "Reused initialized user workspace: "
+                f"open_id={owner_open_id}; tenant_id={current_ctx.get('tenant_id')}; "
+                f"script={state.get('script_url')}; video={state.get('url')}"
+            )
+            return {**state, "user_ctx": current_ctx, "reused": True}
+
+        stamp = timestamp_slug()
+        video_title = f"{setting('FEISHU_BITABLE_TITLE', '即梦视频生成审核表')}-{stamp}"
+        script_title = f"{setting('FEISHU_SCRIPT_BITABLE_TITLE', '即梦视频文案库')}-{stamp}"
+        state = api.create_review_bitable(video_title)
+        state = ensure_script_bitable(api, {**state, "pending_script_title": script_title})
+        ensure_bitable_control_fields(api, state)
+        ensure_script_table_fields(api, state)
+        updated = update_user_config(
+            owner_open_id,
+            {
+                "script_app_token": state.get("script_app_token", ""),
+                "script_table_id": state.get("script_table_id", ""),
+                "video_app_token": state.get("app_token", ""),
+                "video_table_id": state.get("table_id", ""),
+                "script_url": state.get("script_url", ""),
+                "video_url": state.get("url", ""),
+                "workspace_initialized_at": now(),
+            },
+        )
+        log(
+            "Initialized user workspace: "
+            f"open_id={owner_open_id}; tenant_id={updated.get('tenant_id')}; "
+            f"script={state.get('script_url')}; video={state.get('url')}"
+        )
+        return {**state, "user_ctx": updated, "reused": False}
 
 
 def ensure_script_bitable(api: FeishuApi, state: dict) -> dict:
     if state.get("script_app_token") and state.get("script_table_id"):
         return state
-    script_state = api.create_script_bitable()
+    script_state = api.create_script_bitable(str(state.get("pending_script_title") or ""))
     state.update(script_state)
     log(f"Created standalone Feishu script bitable: {script_state.get('script_url')}")
     return state
@@ -3848,8 +3869,9 @@ def start_feishu_ws(worker: Worker) -> None:
             try:
                 initialized = initialize_user_workspace(worker.api, user_ctx)
                 state = initialized
+                title = "✅ 已复用你的 OKIVIVI 工作区。" if state.get("reused") else "✅ 你的 OKIVIVI 工作区已初始化完成。"
                 message = (
-                    "✅ 你的 OKIVIVI 工作区已初始化完成。\n\n"
+                    f"{title}\n\n"
                     f"文案库：{state.get('script_url') or '(empty)'}\n"
                     f"视频审核表：{state.get('url') or '(empty)'}\n\n"
                     "之后输入 1 生成文案，或输入 2 上传文案。"
