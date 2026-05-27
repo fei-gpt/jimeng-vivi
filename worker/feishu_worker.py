@@ -2510,12 +2510,13 @@ def result_card(task: dict, downloaded: Optional[bool] = None) -> dict:
 
 
 def mark_result_downloaded(task: dict) -> Path:
-    source = Path(str(task.get("video_file") or ""))
-    if not source.exists():
+    source_raw = str(task.get("video_file") or "").strip()
+    source = Path(source_raw) if source_raw else output_dir_for_task(task) / "video.mp4"
+    if not source.is_file():
         fallback = output_dir_for_task(task) / "video.mp4"
-        if fallback.exists():
+        if fallback.is_file():
             source = fallback
-    if not source.exists():
+    if not source.is_file():
         raise RuntimeError(f"本地视频文件不存在: {source}")
     target = result_download_path(task)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -4168,18 +4169,6 @@ class Worker:
             video_table_id = str(user_ctx.get("video_table_id") or "")
             if owner_open_id and not user_workspace_available(self.api, user_ctx):
                 raise RuntimeError("请先点击初始化工作区，再使用文案生成。")
-            notify_text(
-                self.api,
-                "📝 开始调用 DeepSeek 生成脚本\n"
-                f"数量: {count}\n"
-                f"文案时长: {script_duration}s\n"
-                f"角色: {'bree,sunny' if character_mode == 'bree_sunny' else 'vivi'}\n"
-                f"模型: {model_version}\n"
-                f"租户: {tenant_id}\n"
-                f"即梦账号: {jimeng_account or '(默认)'}\n"
-                f"需求: {brief or '(默认)'}",
-                owner_open_id,
-            )
             command = [
                 "python3",
                 "worker/generate_scripts.py",
@@ -4230,12 +4219,7 @@ class Worker:
             (LOGS / "generate_scripts.log").write_text(proc.stdout, encoding="utf-8")
             if proc.returncode != 0:
                 raise RuntimeError(f"generate_scripts exited {proc.returncode}: {proc.stdout[-1200:]}")
-            created = [line.strip() for line in proc.stdout.splitlines() if line.strip().endswith(".json")]
-            notify_text(
-                self.api,
-                f"✅ DeepSeek 脚本生成完成\n已创建任务: {len(created)}\n即将由队列发送飞书审核卡片。",
-                owner_open_id,
-            )
+            log("DeepSeek script generation completed; review cards will be sent by queue scanner.")
         except Exception as exc:
             notify_text(self.api, f"❌ DeepSeek 脚本生成失败\n原因: {exc}", str((user_ctx or {}).get("owner_open_id") or ""))
             log(f"Generate scripts failed: {exc}\n{traceback.format_exc()}")
