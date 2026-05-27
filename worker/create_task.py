@@ -98,7 +98,7 @@ def main() -> int:
     if not prompt_text:
         raise SystemExit(f"Prompt file is empty: {prompt}")
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M")
     task_id = args.task_id or f"{timestamp}-{slug(prompt.stem)}"
 
     if args.image:

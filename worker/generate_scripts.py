@@ -59,6 +59,16 @@ def tenant_prompts_dir(tenant_id: str) -> Path:
     return PROMPTS if base == ROOT else base / "prompts" / "generated"
 
 
+def task_id_exists(tenant_id: str, task_id: str) -> bool:
+    base = tenant_root(tenant_id)
+    roots = [ROOT / "tasks"] if base == ROOT else [base / "tasks"]
+    for root in roots:
+        for status in ["pending", "reviewing", "running", "done", "failed", "needs_revision"]:
+            if (root / status / f"{task_id}.json").exists():
+                return True
+    return False
+
+
 def split_doc_paths(value: str) -> List[str]:
     if not value.strip():
         return []
@@ -323,7 +333,11 @@ def create_task(
     task_dir.mkdir(parents=True, exist_ok=True)
 
     name = slug(script_item.get("name") or f"script-{index}")
-    task_id = f"{batch_id}-{index:02d}-{name}"
+    task_id = f"{batch_id}-{name}"
+    duplicate_index = 2
+    while task_id_exists(tenant_id, task_id) or (prompt_dir / f"{task_id}.txt").exists():
+        task_id = f"{batch_id}-{name}-{duplicate_index}"
+        duplicate_index += 1
     prompt_file = prompt_dir / f"{task_id}.txt"
     prompt_file.write_text(script_item["script"].strip() + "\n", encoding="utf-8")
 
@@ -398,7 +412,7 @@ def main() -> int:
     script_duration = int(float(args.script_duration or args.duration or 15))
     script_duration = 30 if script_duration > 15 else 15
     image_dir = Path(args.image_dir).expanduser()
-    batch_id = datetime.now().strftime("okivivi-%Y%m%d-%H%M%S")
+    batch_id = datetime.now().strftime("%Y%m%d-%H%M")
 
     scripts = call_deepseek(agent_doc, count, script_duration, args.brief, args.character_mode)
     if len(scripts) < count:

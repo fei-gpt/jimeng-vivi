@@ -2129,6 +2129,18 @@ def resolve_selected_images(selection: str, task: dict) -> List[str]:
     return result
 
 
+def ensure_task_images_from_suggestion(task: dict) -> None:
+    normalize_task_images(task)
+    if task.get("images"):
+        return
+    selection = task.get("image_suggestion") or task.get("image_variant") or ""
+    selected = resolve_selected_images(selection, task)
+    if selected:
+        task["images"] = selected
+        task["image_source"] = "bot_card"
+        task["script_image_value"] = selection
+
+
 def refresh_prompt_from_review_doc(task: dict, api: FeishuApi) -> None:
     if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id"):
         app_token = task.get("review_bitable_app_token")
@@ -2332,10 +2344,19 @@ def review_card(task: dict) -> dict:
     }
 
 
-def script_review_card(task: dict) -> dict:
+def task_prompt_text(task: dict) -> str:
+    try:
+        return Path(str(task.get("prompt_file") or "")).read_text(encoding="utf-8-sig").strip()
+    except Exception:
+        return str(task.get("prompt") or "").strip()
+
+
+def compact_task_title(task_id: str) -> str:
+    return re.sub(r"^(?:okivivi-|manual-)", "", str(task_id or "")).strip()
+
+
+def script_review_card(task: dict, show_prompt: bool = False, show_dialogue: bool = False, approved: bool = False) -> dict:
     task_id = task["task_id"]
-    script_url = task.get("script_bitable_record_url") or task.get("review_doc_url") or ""
-    script_line = f"[打开工作流表审核文案]({script_url})" if script_url else "工作流表记录创建失败，请查看 worker 日志。"
     params = " | ".join(
         [
             str(task.get("model_version") or "-"),
@@ -2344,30 +2365,73 @@ def script_review_card(task: dict) -> dict:
             str(task.get("video_resolution") or "-"),
         ]
     )
+    image_names = [Path(path).name for path in task.get("images", [])]
+    if not image_names:
+        image_names = [str(task.get("image_suggestion") or "待自动匹配")]
+    prompt = task_prompt_text(task)
+    dialogue_cn = str(task.get("dialogue_translation") or "").strip() or "暂无对话中文。"
+    user_value = card_user_value({
+        "tenant_id": task.get("tenant_id", ""),
+        "owner_open_id": task.get("owner_open_id", ""),
+        "owner_name": task.get("owner_name", ""),
+        "jimeng_account": task.get("jimeng_account", ""),
+        "image_library": task.get("image_library", ""),
+    })
+    base_value = {"task_id": task_id, **user_value}
+    elements: List[dict] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**参数** {params}\n**图片** {', '.join(image_names)}",
+            },
+        }
+    ]
+    actions = [
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "关闭文案" if show_prompt else "文案"},
+            "value": {"action": "toggle_script_prompt", "show_prompt": not show_prompt, "show_dialogue": show_dialogue, **base_value},
+        },
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "关闭对话中文" if show_dialogue else "对话中文"},
+            "value": {"action": "toggle_dialogue_cn", "show_prompt": show_prompt, "show_dialogue": not show_dialogue, **base_value},
+        },
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "已通过" if approved or task.get("card_approved") else "通过"},
+            "type": "primary",
+            "value": {"action": "card_approve_task", "show_prompt": show_prompt, "show_dialogue": show_dialogue, **base_value},
+        },
+    ]
+    elements.append({"tag": "action", "actions": actions})
+    if show_prompt:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**文案**\n```text\n{prompt[:7800]}\n```"},
+        })
+    if show_dialogue:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": f"**对话中文**\n```text\n{dialogue_cn[:4000]}\n```"},
+        })
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {
+                "tag": "plain_text",
+                "content": "在机器人卡片内确认；点击“通过”后直接提交即梦生成，表格只用于记录状态和视频链接。",
+            }
+        ],
+    })
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": f"文案待确认: {task_id}"},
+            "title": {"tag": "plain_text", "content": f"文案待确认: {compact_task_title(task_id)}"},
             "template": "turquoise",
         },
-        "elements": [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"**参数** {params}\n{script_line}",
-                },
-            },
-            {
-                "tag": "note",
-                "elements": [
-                    {
-                        "tag": "plain_text",
-                        "content": "请在工作流表中修改文案、确认“图片”和“模型”，并将“确认”列选择为“确认”。",
-                    }
-                ],
-            },
-        ],
+        "elements": elements,
     }
 
 
@@ -2386,7 +2450,7 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                     "tag": "lark_md",
                     "content": (
                         "**选择模块后点击生成**\n"
-                        "生成后写入工作流表；在表中确认文案、图片和模型后自动生成视频。"
+                        "生成后会发送机器人确认卡片；点击卡片“通过”后自动提交即梦生成。"
                     ),
                 },
             },
@@ -2462,7 +2526,7 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": "生成后写入工作流表；在同一张表中确认文案、图片和模型后自动生成视频。",
+                        "content": "生成后会发送机器人确认卡片；表格只记录文案、状态和视频链接。",
                     }
                 ],
             },
@@ -2559,7 +2623,7 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": "上传后仍需在工作流表选择图片并将“确认”列改为“确认”。多条文案请用单独一行 & 分隔。",
+                        "content": "上传后会发送机器人确认卡片；多条文案请用单独一行 & 分隔。",
                     }
                 ],
             },
@@ -3651,8 +3715,14 @@ class Worker:
                 if task_id in self._running:
                     continue
                 task = read_task(path)
+                if not task.get("card_approved"):
+                    continue
                 retry_after = float(task.get("retry_after_ts") or 0)
                 if retry_after and time.time() < retry_after:
+                    continue
+                if task.get("card_approved"):
+                    ensure_task_images_from_suggestion(task)
+                    self.start_generation(path, task)
                     continue
                 if not task.get("review_bitable_record_id") and task.get("script_bitable_record_id"):
                     if promote_script_to_review(task, self.api):
@@ -3738,7 +3808,7 @@ class Worker:
         thread = threading.Thread(target=self._run_generation_safe, args=(task,), daemon=True)
         thread.start()
 
-    def approve(self, task_id: str, user_ctx: Optional[dict] = None) -> None:
+    def approve(self, task_id: str, user_ctx: Optional[dict] = None, require_table_confirm: bool = True) -> None:
         reply_open_id = str((user_ctx or {}).get("owner_open_id") or "")
         if task_id in self._running:
             notify_text(self.api, f"⚠️ 任务正在生成中，已忽略重复通过: {task_id}", reply_open_id)
@@ -3765,16 +3835,32 @@ class Worker:
             notify_task_text(self.api, task, f"⚠️ 任务已有生成结果，已标记 done，不会重复调用即梦: {task_id}")
             return
         task = read_task(path)
-        try:
-            refresh_prompt_from_review_doc(task, self.api)
-            if task.pop("_review_not_confirmed", False):
-                log(f"Task not confirmed in bitable, approve ignored silently: {task_id}")
+        if require_table_confirm:
+            try:
+                refresh_prompt_from_review_doc(task, self.api)
+                if task.pop("_review_not_confirmed", False):
+                    log(f"Task not confirmed in bitable, approve ignored silently: {task_id}")
+                    write_task(current_status or "reviewing", task)
+                    return
+            except Exception as exc:
+                notify_task_text(self.api, task, f"❌ 读取云文档失败，未开始生成\n任务: {task_id}\n原因: {exc}")
+                log(f"Failed to refresh prompt from review doc for {task_id}: {exc}\n{traceback.format_exc()}")
+                return
+        else:
+            ensure_task_images_from_suggestion(task)
+            if not task.get("images"):
+                notify_task_text(self.api, task, f"❌ 未找到可用于生成的图片\n任务: {task_id}\n图片选择: {task.get('image_suggestion') or '(empty)'}")
                 write_task(current_status or "reviewing", task)
                 return
-        except Exception as exc:
-            notify_task_text(self.api, task, f"❌ 读取云文档失败，未开始生成\n任务: {task_id}\n原因: {exc}")
-            log(f"Failed to refresh prompt from review doc for {task_id}: {exc}\n{traceback.format_exc()}")
-            return
+            missing_images = [image for image in task.get("images", []) if not Path(image).exists()]
+            if missing_images:
+                notify_task_text(self.api, task, f"❌ 图片文件不存在，未开始生成\n任务: {task_id}\n" + "\n".join(missing_images))
+                write_task(current_status or "reviewing", task)
+                return
+            task["review_backend"] = "bot_card"
+            task["card_approved"] = True
+            task["card_approved_at"] = now()
+            write_task(current_status or "reviewing", task)
         self.start_generation(path, task)
         if status_for_task(task_id) == "reviewing":
             account = self.account_key(task)
@@ -3824,7 +3910,7 @@ class Worker:
         character_mode = str(character_mode or "single_vivi").strip().lower()
         if character_mode not in {"single_vivi", "bree_sunny"}:
             character_mode = "single_vivi"
-        image_suggestion = "all" if character_mode == "bree_sunny" else ""
+        image_suggestion = "all" if character_mode == "bree_sunny" else "blue"
         user_ctx = user_ctx or user_context("")
         if user_ctx.get("owner_open_id") and not user_workspace_available(self.api, user_ctx):
             raise RuntimeError("请先点击初始化工作区，再使用文案输入。")
@@ -3833,9 +3919,14 @@ class Worker:
         prompt_dir = prompt_dir_for_task(seed_task, "manual")
         prompt_dir.mkdir(parents=True, exist_ok=True)
         created: List[dict] = []
-        batch_id = datetime.now().strftime("manual-%Y%m%d-%H%M%S")
+        batch_id = datetime.now().strftime("%Y%m%d-%H%M")
         for index, prompt_text in enumerate(prompts, start=1):
-            task_id = f"{batch_id}-{index:02d}" if count > 1 else batch_id
+            base_task_id = f"{batch_id}-manual"
+            task_id = base_task_id if count == 1 else f"{base_task_id}-{index:02d}"
+            duplicate_index = 2
+            while find_task(task_id) or (prompt_dir / f"{task_id}.txt").exists():
+                task_id = f"{base_task_id}-{index:02d}-{duplicate_index}" if count > 1 else f"{base_task_id}-{duplicate_index}"
+                duplicate_index += 1
             prompt_file = prompt_dir / f"{task_id}.txt"
             prompt_file.write_text(prompt_text + "\n", encoding="utf-8")
             task = {
@@ -4505,14 +4596,15 @@ def start_feishu_ws(worker: Worker) -> None:
             brief = str(value.get("brief") or "").strip()
 
             def generate_scripts_async() -> None:
-                worker.generate_scripts(
+                worker._generate_scripts_safe(
                     count,
                     min(script_duration, 15),
                     brief,
-                    script_duration=script_duration,
-                    character_mode=character_mode,
-                    model_version=model_version,
-                    user_ctx=user_ctx,
+                    script_duration,
+                    character_mode,
+                    model_version,
+                    "feishu_bot",
+                    user_ctx,
                 )
 
             signature = request_signature(
@@ -4565,6 +4657,48 @@ def start_feishu_ws(worker: Worker) -> None:
             )
             state = USER_REQUESTS.submit(owner_open_id, signature, "文案自行输入", submit_manual_prompt_async)
             return card_response(request_toast(state, "已收到，正在上传到工作流表"))
+        if value and value.get("action") in {"toggle_script_prompt", "toggle_dialogue_cn", "card_approve_task"}:
+            user_ctx = card_user_context(value)
+            owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
+            task_id = str(value.get("task_id") or "").strip()
+            if not owner_open_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "无法识别当前点击用户，请重新打开卡片"}
+                })
+            if not task_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "缺少任务ID"}
+                })
+            path = find_task(task_id)
+            if not path:
+                return card_response({
+                    "toast": {"type": "error", "content": f"未找到任务: {task_id}"}
+                })
+            task = read_task(path)
+            if str(task.get("owner_open_id") or "") and str(task.get("owner_open_id") or "") != owner_open_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "这个任务不属于当前点击用户"}
+                })
+            show_prompt = str(value.get("show_prompt")).lower() == "true" or value.get("show_prompt") is True
+            show_dialogue = str(value.get("show_dialogue")).lower() == "true" or value.get("show_dialogue") is True
+            action = str(value.get("action") or "")
+            if action == "card_approve_task":
+                task["card_approved"] = True
+                task["card_approved_at"] = now()
+                write_task(status_for_task(task_id) or "reviewing", task)
+
+                def approve_from_card() -> None:
+                    worker.approve(task_id, user_ctx, require_table_confirm=False)
+
+                signature = request_signature("card_approve_task", value, ["task_id"])
+                state = USER_REQUESTS.submit(owner_open_id, signature, "卡片通过生成", approve_from_card)
+                response = request_toast(state, "已通过，正在提交即梦生成")
+                response["card"] = script_review_card(task, show_prompt=show_prompt, show_dialogue=show_dialogue, approved=True)
+                return card_response(response)
+            return card_response({
+                "toast": {"type": "success", "content": "已更新卡片"},
+                "card": script_review_card(task, show_prompt=show_prompt, show_dialogue=show_dialogue),
+            })
         return card_response({
             "toast": {
                 "type": "info",
