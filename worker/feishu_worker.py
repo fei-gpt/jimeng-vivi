@@ -11,9 +11,10 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
+from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -217,6 +218,79 @@ def action_seen_recently(key: str, ttl_seconds: int = 180) -> bool:
             return True
         ACTION_DEDUPE[key] = now_ts
         return False
+
+
+class UserRequestStateMachine:
+    """Serialize side-effecting bot requests per user and drop exact duplicates."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: Dict[str, str] = {}
+        self._queues: Dict[str, Deque[Tuple[str, str, Callable[[], None]]]] = {}
+
+    def submit(self, user_key: str, signature: str, label: str, job: Callable[[], None]) -> str:
+        user_key = user_key or "__unknown__"
+        with self._lock:
+            queue = self._queues.setdefault(user_key, deque())
+            if self._active.get(user_key) == signature or any(item[0] == signature for item in queue):
+                log(f"User request duplicate ignored: user={user_key}; label={label}; signature={signature}")
+                return "duplicate"
+            if self._active.get(user_key):
+                queue.append((signature, label, job))
+                log(f"User request queued: user={user_key}; label={label}; queue_size={len(queue)}")
+                return "queued"
+            self._active[user_key] = signature
+        self._start(user_key, signature, label, job)
+        log(f"User request started: user={user_key}; label={label}")
+        return "started"
+
+    def _start(self, user_key: str, signature: str, label: str, job: Callable[[], None]) -> None:
+        def runner() -> None:
+            try:
+                job()
+            except Exception as exc:
+                log(f"User request job failed: user={user_key}; label={label}; error={exc}\n{traceback.format_exc()}")
+            finally:
+                self._complete(user_key, signature)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _complete(self, user_key: str, signature: str) -> None:
+        next_item: Optional[Tuple[str, str, Callable[[], None]]] = None
+        with self._lock:
+            if self._active.get(user_key) == signature:
+                self._active.pop(user_key, None)
+            queue = self._queues.get(user_key)
+            if queue:
+                next_item = queue.popleft()
+                self._active[user_key] = next_item[0]
+                if not queue:
+                    self._queues.pop(user_key, None)
+            else:
+                self._queues.pop(user_key, None)
+        if next_item:
+            next_signature, next_label, next_job = next_item
+            log(f"User request dequeued: user={user_key}; label={next_label}")
+            self._start(user_key, next_signature, next_label, next_job)
+
+
+USER_REQUESTS = UserRequestStateMachine()
+
+
+def request_signature(action: str, value: dict, keys: List[str]) -> str:
+    payload = {"action": action}
+    for key in keys:
+        payload[key] = value.get(key)
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return action + ":" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def request_toast(state: str, started: str, queued: str = "已加入队列，将按顺序处理") -> dict:
+    if state == "duplicate":
+        return {"toast": {"type": "success", "content": "相同请求已在处理中，请勿重复提交"}}
+    if state == "queued":
+        return {"toast": {"type": "info", "content": queued}}
+    return {"toast": {"type": "success", "content": started}}
 
 
 def notify_text(api: "FeishuApi", text: str, open_id: str = "") -> None:
@@ -4406,13 +4480,9 @@ def start_feishu_ws(worker: Worker) -> None:
                     log(f"Workspace setup failed: {exc}\n{traceback.format_exc()}")
                     notify_text(worker.api, f"❌ 初始化工作区失败\n原因: {exc}", owner_open_id)
 
-            threading.Thread(target=setup_workspace_async, daemon=True).start()
-            return card_response({
-                "toast": {
-                    "type": "success",
-                    "content": "已开始初始化，完成后会私聊通知你",
-                }
-            })
+            signature = request_signature("setup_workspace", value, ["tenant_id"])
+            state = USER_REQUESTS.submit(owner_open_id, signature, "初始化工作区", setup_workspace_async)
+            return card_response(request_toast(state, "已开始初始化，完成后会私聊通知你"))
         if value and value.get("action") in {"prompt_generate", "prompt_form_submit"}:
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
@@ -4433,26 +4503,6 @@ def start_feishu_ws(worker: Worker) -> None:
             character_mode = str(value.get("character_mode") or "single_vivi")
             model_version = str(value.get("model_version") or setting("DEFAULT_MODEL", "seedance2.0fast_vip"))
             brief = str(value.get("brief") or "").strip()
-            dedupe_raw = json.dumps(
-                {
-                    "owner": owner_open_id,
-                    "count": count,
-                    "script_duration": script_duration,
-                    "character_mode": character_mode,
-                    "model_version": model_version,
-                    "brief": brief,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            dedupe_key = "prompt_generate:" + hashlib.sha256(dedupe_raw.encode("utf-8")).hexdigest()
-            if action_seen_recently(dedupe_key):
-                return card_response({
-                    "toast": {
-                        "type": "success",
-                        "content": "已收到，请勿重复点击",
-                    }
-                })
 
             def generate_scripts_async() -> None:
                 worker.generate_scripts(
@@ -4465,13 +4515,13 @@ def start_feishu_ws(worker: Worker) -> None:
                     user_ctx=user_ctx,
                 )
 
-            threading.Thread(target=generate_scripts_async, daemon=True).start()
-            return card_response({
-                "toast": {
-                    "type": "success",
-                    "content": f"已开始生成 {count} 条 {script_duration}s 文案",
-                }
-            })
+            signature = request_signature(
+                "prompt_generate",
+                value,
+                ["count", "script_duration", "character_mode", "model_version", "brief"],
+            )
+            state = USER_REQUESTS.submit(owner_open_id, signature, "DeepSeek文案生成", generate_scripts_async)
+            return card_response(request_toast(state, f"已开始生成 {count} 条 {script_duration}s 文案"))
         if value and value.get("action") == "manual_prompt_submit":
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
@@ -4492,26 +4542,6 @@ def start_feishu_ws(worker: Worker) -> None:
             duration = int(value.get("manual_duration") or 15)
             character_mode = str(value.get("manual_character_mode") or "single_vivi")
             model_version = str(value.get("manual_model_version") or setting("DEFAULT_MODEL", "seedance2.0fast_vip"))
-            dedupe_raw = json.dumps(
-                {
-                    "owner": owner_open_id,
-                    "prompt": prompt,
-                    "note": note,
-                    "duration": duration,
-                    "character_mode": character_mode,
-                    "model_version": model_version,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            dedupe_key = "manual_prompt:" + hashlib.sha256(dedupe_raw.encode("utf-8")).hexdigest()
-            if action_seen_recently(dedupe_key):
-                return card_response({
-                    "toast": {
-                        "type": "success",
-                        "content": "已收到，请勿重复点击",
-                    }
-                })
 
             def submit_manual_prompt_async() -> None:
                 try:
@@ -4528,13 +4558,13 @@ def start_feishu_ws(worker: Worker) -> None:
                     log(f"Manual prompt submit failed: {exc}\n{traceback.format_exc()}")
                     notify_text(worker.api, f"❌ 文案上传失败\n原因: {exc}", owner_open_id)
 
-            threading.Thread(target=submit_manual_prompt_async, daemon=True).start()
-            return card_response({
-                "toast": {
-                    "type": "success",
-                    "content": "已收到，正在上传到工作流表",
-                }
-            })
+            signature = request_signature(
+                "manual_prompt_submit",
+                value,
+                ["manual_prompt", "manual_note", "manual_duration", "manual_character_mode", "manual_model_version"],
+            )
+            state = USER_REQUESTS.submit(owner_open_id, signature, "文案自行输入", submit_manual_prompt_async)
+            return card_response(request_toast(state, "已收到，正在上传到工作流表"))
         return card_response({
             "toast": {
                 "type": "info",
