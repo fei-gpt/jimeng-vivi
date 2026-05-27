@@ -2579,8 +2579,52 @@ def result_status_card(owner_open_id: str = "") -> dict:
 
 def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
     default_model = setting("DEFAULT_MODEL", "seedance2.0fast_vip")
+    count_select = {
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "条数"},
+        "initial_option": "1",
+        "name": "count",
+        "required": True,
+        "options": [
+            {"text": {"tag": "plain_text", "content": f"{count} 条"}, "value": str(count)}
+            for count in [1, 2, 3, 5, 10]
+        ],
+    }
+    duration_select = {
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "时长"},
+        "initial_option": "15",
+        "name": "script_duration",
+        "required": True,
+        "options": [
+            {"text": {"tag": "plain_text", "content": "15s"}, "value": "15"},
+            {"text": {"tag": "plain_text", "content": "30s"}, "value": "30"},
+        ],
+    }
+    role_select = {
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "角色"},
+        "initial_option": "single_vivi",
+        "name": "character_mode",
+        "required": True,
+        "options": [
+            {"text": {"tag": "plain_text", "content": "1. vivi"}, "value": "single_vivi"},
+            {"text": {"tag": "plain_text", "content": "2. bree, sunny"}, "value": "bree_sunny"},
+        ],
+    }
+    model_select = {
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "模型"},
+        "initial_option": default_model,
+        "name": "model_version",
+        "required": True,
+        "options": [
+            {"text": {"tag": "plain_text", "content": label}, "value": value}
+            for label, value in MODEL_OPTIONS
+        ],
+    }
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": False},
         "header": {
             "title": {"tag": "plain_text", "content": "OKIVIVI 文案生成入口"},
             "template": "blue",
@@ -2591,8 +2635,8 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "text": {
                     "tag": "lark_md",
                     "content": (
-                        "**选择模块后点击生成**\n"
-                        "生成后会发送机器人确认卡片；点击卡片“通过”后自动提交即梦生成。"
+                        "**选择后生成。**\n"
+                        "生成后在机器人卡片内确认。"
                     ),
                 },
             },
@@ -2601,55 +2645,30 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "name": "prompt_form",
                 "elements": [
                     {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "条数"},
-                        "initial_option": "1",
-                        "name": "count",
-                        "required": True,
-                        "options": [
-                            {"text": {"tag": "plain_text", "content": f"{count} 条"}, "value": str(count)}
-                            for count in [1, 2, 3, 5, 10]
+                        "tag": "column_set",
+                        "flex_mode": "none",
+                        "background_style": "default",
+                        "columns": [
+                            {"tag": "column", "width": "weighted", "weight": 1, "elements": [count_select]},
+                            {"tag": "column", "width": "weighted", "weight": 1, "elements": [duration_select]},
                         ],
                     },
                     {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "文案时长"},
-                        "initial_option": "15",
-                        "name": "script_duration",
-                        "required": True,
-                        "options": [
-                            {"text": {"tag": "plain_text", "content": "15s"}, "value": "15"},
-                            {"text": {"tag": "plain_text", "content": "30s"}, "value": "30"},
-                        ],
-                    },
-                    {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "角色"},
-                        "initial_option": "single_vivi",
-                        "name": "character_mode",
-                        "required": True,
-                        "options": [
-                            {"text": {"tag": "plain_text", "content": "1. vivi"}, "value": "single_vivi"},
-                            {"text": {"tag": "plain_text", "content": "2. bree, sunny"}, "value": "bree_sunny"},
-                        ],
-                    },
-                    {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "调用模型"},
-                        "initial_option": default_model,
-                        "name": "model_version",
-                        "required": True,
-                        "options": [
-                            {"text": {"tag": "plain_text", "content": label}, "value": value}
-                            for label, value in MODEL_OPTIONS
+                        "tag": "column_set",
+                        "flex_mode": "none",
+                        "background_style": "default",
+                        "columns": [
+                            {"tag": "column", "width": "weighted", "weight": 1, "elements": [role_select]},
+                            {"tag": "column", "width": "weighted", "weight": 1, "elements": [model_select]},
                         ],
                     },
                     {
                         "tag": "input",
                         "name": "brief",
+                        "multiline": True,
                         "placeholder": {
                             "tag": "plain_text",
-                            "content": "备注内容：填写用户的文案大意，例如宿舍 group project，疲惫但好笑",
+                            "content": "备注内容：填写文案大意，例如宿舍 group project，疲惫但好笑",
                         },
                         "default_value": "",
                     },
