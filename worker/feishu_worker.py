@@ -2435,6 +2435,148 @@ def script_review_card(task: dict, show_prompt: bool = False, show_dialogue: boo
     }
 
 
+def result_download_dir(task: dict) -> Path:
+    configured = str(setting("RESULT_DOWNLOAD_DIR") or "").strip()
+    if configured:
+        base = Path(configured).expanduser()
+        if "{tenant_id}" in configured:
+            base = Path(configured.format(tenant_id=tenant_id_for_task(task), owner_open_id=task.get("owner_open_id", ""))).expanduser()
+    else:
+        base = tenant_root(task) / "downloads"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def result_download_path(task: dict) -> Path:
+    task_id = str(task.get("task_id") or "video")
+    return result_download_dir(task) / f"{task_id}.mp4"
+
+
+def result_card(task: dict, downloaded: Optional[bool] = None) -> dict:
+    task_id = str(task.get("task_id") or "")
+    video_url = str(task.get("video_url") or "").strip()
+    downloaded = bool(task.get("downloaded_at") or task.get("download_file")) if downloaded is None else downloaded
+    download_path = str(task.get("download_file") or result_download_path(task))
+    user_value = card_user_value({
+        "tenant_id": task.get("tenant_id", ""),
+        "owner_open_id": task.get("owner_open_id", ""),
+        "owner_name": task.get("owner_name", ""),
+        "jimeng_account": task.get("jimeng_account", ""),
+        "image_library": task.get("image_library", ""),
+    })
+    base_value = {"task_id": task_id, **user_value}
+    link_line = f"[{task_id}.mp4]({video_url})" if video_url else "视频链接生成中"
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "green" if downloaded else "blue",
+            "title": {"tag": "plain_text", "content": f"返回结果: {compact_task_title(task_id)}"},
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"**任务ID** {task_id}\n**视频链接** {link_line}",
+                },
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "已下载" if downloaded else "下载"},
+                        "type": "primary" if not downloaded else "default",
+                        "value": {"action": "result_download", **base_value},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "文件位置"},
+                        "value": {"action": "result_location", **base_value},
+                    },
+                ],
+            },
+            {
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": f"本地/服务器保存位置：{download_path}",
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def mark_result_downloaded(task: dict) -> Path:
+    source = Path(str(task.get("video_file") or ""))
+    if not source.exists():
+        fallback = output_dir_for_task(task) / "video.mp4"
+        if fallback.exists():
+            source = fallback
+    if not source.exists():
+        raise RuntimeError(f"本地视频文件不存在: {source}")
+    target = result_download_path(task)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.resolve() != target.resolve():
+        shutil.copyfile(source, target)
+    task["download_file"] = str(target)
+    task["downloaded_at"] = now()
+    write_task("done", task)
+    return target
+
+
+def undownloaded_done_tasks(owner_open_id: str = "", limit: int = 50) -> List[dict]:
+    tasks = []
+    for task in collect_tasks("done", limit * 3):
+        if not task.get("video_url"):
+            continue
+        if owner_open_id and str(task.get("owner_open_id") or "") != owner_open_id:
+            continue
+        if task.get("downloaded_at") or task.get("download_file"):
+            continue
+        tasks.append(task)
+        if len(tasks) >= limit:
+            break
+    return tasks
+
+
+def result_status_card(owner_open_id: str = "") -> dict:
+    pending = undownloaded_done_tasks(owner_open_id)
+    count = len(pending)
+    top_task = pending[0] if pending else {}
+    ctx = user_context(owner_open_id) if owner_open_id else user_context("")
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue" if count else "green",
+            "title": {"tag": "plain_text", "content": "返回结果状态栏"},
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"当前未下载视频：**{count}** 条"},
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "跳转到最上方未下载"},
+                        "type": "primary",
+                        "value": {
+                            "action": "result_jump_first",
+                            "task_id": top_task.get("task_id", ""),
+                            **card_user_value(ctx),
+                        },
+                    }
+                ],
+            },
+        ],
+    }
+
+
 def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
     default_model = setting("DEFAULT_MODEL", "seedance2.0fast_vip")
     return {
@@ -3517,7 +3659,9 @@ def run_generation(task: dict, api: FeishuApi) -> None:
         except Exception as exc:
             log(f"Failed to write video link to review doc for {task_id}: {exc}")
             api.append_doc_text(task["review_doc_id"], None, f"视频链接：{video_url}")
-    notify_task_text(api, task, f"✅ 即梦视频生成成功\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}\n视频文件: {task['video_file']}")
+    notify_task_text(api, task, f"✅ 即梦视频生成成功\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}")
+    notify_task_card(api, task, result_card(task))
+    notify_task_card(api, task, result_status_card(str(task.get("owner_open_id") or "")))
 
 
 class Worker:
@@ -4698,6 +4842,44 @@ def start_feishu_ws(worker: Worker) -> None:
             return card_response({
                 "toast": {"type": "success", "content": "已更新卡片"},
                 "card": script_review_card(task, show_prompt=show_prompt, show_dialogue=show_dialogue),
+            })
+        if value and value.get("action") in {"result_download", "result_location", "result_jump_first"}:
+            user_ctx = card_user_context(value)
+            owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
+            action = str(value.get("action") or "")
+            task_id = str(value.get("task_id") or "").strip()
+            if not owner_open_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "无法识别当前点击用户，请重新打开结果卡片"}
+                })
+            if action == "result_jump_first":
+                pending = undownloaded_done_tasks(owner_open_id, 1)
+                if not pending:
+                    notify_card(worker.api, result_status_card(owner_open_id), owner_open_id)
+                    return card_response({"toast": {"type": "success", "content": "当前没有未下载视频"}})
+                notify_card(worker.api, result_card(pending[0]), owner_open_id)
+                return card_response({"toast": {"type": "success", "content": "已发送最上方未下载结果"}})
+            if not task_id:
+                return card_response({"toast": {"type": "error", "content": "缺少任务ID"}})
+            path = find_task(task_id)
+            if not path:
+                return card_response({"toast": {"type": "error", "content": f"未找到任务: {task_id}"}})
+            task = read_task(path)
+            if str(task.get("owner_open_id") or "") and str(task.get("owner_open_id") or "") != owner_open_id:
+                return card_response({"toast": {"type": "error", "content": "这个结果不属于当前点击用户"}})
+            if action == "result_location":
+                location = str(task.get("download_file") or result_download_path(task))
+                notify_text(worker.api, f"📁 文件位置\n任务: {task_id}\n路径: {location}", owner_open_id)
+                return card_response({"toast": {"type": "success", "content": "已发送文件位置"}})
+            try:
+                target = mark_result_downloaded(task)
+            except Exception as exc:
+                log(f"Result download failed: {exc}\n{traceback.format_exc()}")
+                return card_response({"toast": {"type": "error", "content": f"下载失败: {exc}"}})
+            notify_text(worker.api, f"✅ 已准备下载文件\n任务: {task_id}\n文件: {target}\n链接: {task.get('video_url') or '(empty)'}", owner_open_id)
+            return card_response({
+                "toast": {"type": "success", "content": "已下载"},
+                "card": result_card(task, downloaded=True),
             })
         return card_response({
             "toast": {
