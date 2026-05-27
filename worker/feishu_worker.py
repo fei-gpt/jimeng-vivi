@@ -2697,8 +2697,41 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
 
 def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
     default_model = setting("DEFAULT_MODEL", "seedance2.0fast_vip")
+    duration_select = {
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "时长"},
+        "initial_option": "15",
+        "name": "manual_duration",
+        "required": True,
+        "options": [
+            {"text": {"tag": "plain_text", "content": f"{second}s"}, "value": str(second)}
+            for second in range(4, 16)
+        ],
+    }
+    role_select = {
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "角色"},
+        "initial_option": "single_vivi",
+        "name": "manual_character_mode",
+        "required": True,
+        "options": [
+            {"text": {"tag": "plain_text", "content": "1. vivi"}, "value": "single_vivi"},
+            {"text": {"tag": "plain_text", "content": "2. bree, sunny"}, "value": "bree_sunny"},
+        ],
+    }
+    model_select = {
+        "tag": "select_static",
+        "placeholder": {"tag": "plain_text", "content": "模型"},
+        "initial_option": default_model,
+        "name": "manual_model_version",
+        "required": True,
+        "options": [
+            {"text": {"tag": "plain_text", "content": label}, "value": value}
+            for label, value in MODEL_OPTIONS
+        ],
+    }
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": False},
         "header": {
             "title": {"tag": "plain_text", "content": "OKIVIVI 文案输入"},
             "template": "green",
@@ -2709,9 +2742,8 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "text": {
                     "tag": "lark_md",
                     "content": (
-                        "**批量粘贴完整分镜文案。**\n"
-                        "多条文案请用单独一行 `&` 分隔；系统会按 `&` 自动判断文案条数。\n"
-                        "示例：第一条完整分镜\\n&\\n第二条完整分镜"
+                        "**粘贴完整分镜文案。**\n"
+                        "多条文案用单独一行 `&` 分隔。"
                     ),
                 },
             },
@@ -2720,36 +2752,20 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                 "name": "manual_prompt_form",
                 "elements": [
                     {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "视频时长"},
-                        "initial_option": "15",
-                        "name": "manual_duration",
-                        "required": True,
-                        "options": [
-                            {"text": {"tag": "plain_text", "content": f"{second}s"}, "value": str(second)}
-                            for second in range(4, 16)
+                        "tag": "column_set",
+                        "flex_mode": "none",
+                        "background_style": "default",
+                        "columns": [
+                            {"tag": "column", "width": "weighted", "weight": 1, "elements": [duration_select]},
+                            {"tag": "column", "width": "weighted", "weight": 1, "elements": [role_select]},
                         ],
                     },
                     {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "角色"},
-                        "initial_option": "single_vivi",
-                        "name": "manual_character_mode",
-                        "required": True,
-                        "options": [
-                            {"text": {"tag": "plain_text", "content": "1. vivi"}, "value": "single_vivi"},
-                            {"text": {"tag": "plain_text", "content": "2. bree, sunny"}, "value": "bree_sunny"},
-                        ],
-                    },
-                    {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "调用模型"},
-                        "initial_option": default_model,
-                        "name": "manual_model_version",
-                        "required": True,
-                        "options": [
-                            {"text": {"tag": "plain_text", "content": label}, "value": value}
-                            for label, value in MODEL_OPTIONS
+                        "tag": "column_set",
+                        "flex_mode": "none",
+                        "background_style": "default",
+                        "columns": [
+                            {"tag": "column", "width": "weighted", "weight": 1, "elements": [model_select]},
                         ],
                     },
                     {
@@ -2768,12 +2784,13 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "name": "manual_note",
                         "placeholder": {"tag": "plain_text", "content": "备注，可留空"},
                         "default_value": "",
+                        "multiline": True,
                     },
                     {
                         "tag": "button",
                         "name": "manual_prompt_submit",
                         "action_type": "form_submit",
-                        "text": {"tag": "plain_text", "content": "上传到工作流表"},
+                        "text": {"tag": "plain_text", "content": "上传文案"},
                         "type": "primary",
                         "value": {"action": "manual_prompt_submit", **card_user_value(user_ctx)},
                     },
