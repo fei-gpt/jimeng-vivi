@@ -149,7 +149,13 @@ def card_user_value(user_ctx: Optional[dict] = None) -> dict:
 
 def card_user_context(value: Optional[dict]) -> dict:
     value = value or {}
-    owner_open_id = str(value.get("owner_open_id") or "").strip()
+    owner_open_id = str(
+        value.get("owner_open_id")
+        or value.get("actor_open_id")
+        or value.get("operator_open_id")
+        or value.get("click_open_id")
+        or ""
+    ).strip()
     ctx = user_context(owner_open_id)
     overrides = {
         "tenant_id": str(value.get("tenant_id") or ctx.get("tenant_id") or "").strip(),
@@ -3963,6 +3969,34 @@ class Worker:
 
 
 def parse_action(payload: Any) -> Optional[dict]:
+    def read_attr(obj: Any, name: str) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(name)
+        return getattr(obj, name, None)
+
+    def extract_open_id(obj: Any, depth: int = 0) -> str:
+        if obj is None or depth > 5:
+            return ""
+        if isinstance(obj, str):
+            return ""
+        for container_name in ("operator", "user", "sender", "sender_id", "operator_id", "user_id"):
+            container = read_attr(obj, container_name)
+            if container is not None:
+                found = extract_open_id(container, depth + 1)
+                if found:
+                    return found
+        direct = read_attr(obj, "open_id")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        if isinstance(obj, dict):
+            for value in obj.values():
+                found = extract_open_id(value, depth + 1)
+                if found:
+                    return found
+        return ""
+
+    actor_open_id = extract_open_id(payload)
+
     def read_value(action: Any) -> dict:
         merged: dict = {}
         form_value = getattr(action, "form_value", None)
@@ -3978,6 +4012,10 @@ def parse_action(payload: Any) -> Optional[dict]:
                 merged["action"] = "prompt_form_submit"
             elif any(key in merged for key in ("manual_prompt", "manual_note")):
                 merged["action"] = "manual_prompt_submit"
+        if actor_open_id and not merged.get("owner_open_id"):
+            merged["owner_open_id"] = actor_open_id
+        if actor_open_id:
+            merged["actor_open_id"] = actor_open_id
         return merged
 
     try:
@@ -4007,9 +4045,17 @@ def parse_action(payload: Any) -> Optional[dict]:
                         merged["action"] = "prompt_form_submit"
                     elif any(key in merged for key in ("manual_prompt", "manual_note")):
                         merged["action"] = "manual_prompt_submit"
+                if actor_open_id and not merged.get("owner_open_id"):
+                    merged["owner_open_id"] = actor_open_id
+                if actor_open_id:
+                    merged["actor_open_id"] = actor_open_id
                 return merged
             value = payload.get("value")
             if isinstance(value, dict):
+                if actor_open_id and not value.get("owner_open_id"):
+                    value["owner_open_id"] = actor_open_id
+                if actor_open_id:
+                    value["actor_open_id"] = actor_open_id
                 return value
     except Exception:
         return None
@@ -4230,6 +4276,10 @@ def start_feishu_ws(worker: Worker) -> None:
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
             action = str(value.get("action") or "")
+            if not owner_open_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "无法识别当前点击用户，请在机器人私聊中输入 菜单"}
+                })
             if action == "menu_prompt_generate":
                 if owner_open_id and not user_workspace_ready(user_ctx):
                     notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
@@ -4263,6 +4313,10 @@ def start_feishu_ws(worker: Worker) -> None:
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
             action = str(value.get("action") or "")
+            if not owner_open_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "无法识别当前点击用户，请在机器人私聊中重新打开账号管理"}
+                })
             try:
                 if action == "account_list":
                     message = "已保存即梦账号：\n" + jimeng_accounts_text()
@@ -4326,6 +4380,10 @@ def start_feishu_ws(worker: Worker) -> None:
         if value and value.get("action") == "setup_workspace":
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
+            if not owner_open_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "无法识别当前点击用户，请在机器人私聊中输入 初始化"}
+                })
             def setup_workspace_async() -> None:
                 try:
                     initialized = initialize_user_workspace(worker.api, user_ctx)
@@ -4358,6 +4416,10 @@ def start_feishu_ws(worker: Worker) -> None:
         if value and value.get("action") in {"prompt_generate", "prompt_form_submit"}:
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
+            if not owner_open_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "无法识别当前点击用户，请重新输入 1 打开文案生成"}
+                })
             if owner_open_id and not user_workspace_ready(user_ctx):
                 notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
                 return card_response({
@@ -4413,6 +4475,10 @@ def start_feishu_ws(worker: Worker) -> None:
         if value and value.get("action") == "manual_prompt_submit":
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
+            if not owner_open_id:
+                return card_response({
+                    "toast": {"type": "error", "content": "无法识别当前点击用户，请重新输入 2 打开文案输入"}
+                })
             if owner_open_id and not user_workspace_ready(user_ctx):
                 notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
                 return card_response({
