@@ -2789,13 +2789,6 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "columns": [
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [duration_select]},
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [role_select]},
-                        ],
-                    },
-                    {
-                        "tag": "column_set",
-                        "flex_mode": "none",
-                        "background_style": "default",
-                        "columns": [
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [model_select]},
                         ],
                     },
@@ -2809,6 +2802,7 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "default_value": "",
                         "required": True,
                         "multiline": True,
+                        "rows": 8,
                     },
                     {
                         "tag": "input",
@@ -2816,6 +2810,7 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "placeholder": {"tag": "plain_text", "content": "备注，可留空"},
                         "default_value": "",
                         "multiline": True,
+                        "rows": 2,
                     },
                     {
                         "tag": "button",
