@@ -2463,7 +2463,8 @@ def welcome_text() -> str:
 
 
 def welcome_card(user_ctx: Optional[dict] = None) -> dict:
-    ctx = user_ctx or user_context("")
+    ctx = (user_ctx or {}).get("user_ctx") if isinstance(user_ctx, dict) and isinstance(user_ctx.get("user_ctx"), dict) else user_ctx
+    ctx = ctx or user_context("")
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -3122,6 +3123,22 @@ def download_video(url: str, output: Path) -> None:
         shutil.copyfileobj(resp, f)
 
 
+def find_downloaded_video(out_dir: Path) -> Optional[Path]:
+    preferred = out_dir / "video.mp4"
+    if preferred.exists() and preferred.stat().st_size > 0:
+        return preferred
+    candidates = sorted(
+        (
+            path
+            for path in out_dir.glob("*.mp4")
+            if path.is_file() and path.stat().st_size > 0
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
 def output_is_success(task_id: str) -> bool:
     task_path_found = find_task(task_id)
     task = read_task(task_path_found) if task_path_found else {"task_id": task_id}
@@ -3260,17 +3277,23 @@ def run_generation(task: dict, api: FeishuApi) -> None:
                 continue
             raise RuntimeError(result.get("fail_reason") or f"Dreamina status: {result.get('gen_status')}")
     videos = (result.get("result_json") or {}).get("videos") or []
-    if not videos or not videos[0].get("video_url"):
-        raise RuntimeError("Dreamina succeeded but no video_url was returned.")
-    video_url = videos[0]["video_url"]
-    download_video(video_url, out_dir / "video.mp4")
+    video_url = videos[0].get("video_url") if videos else ""
+    canonical_video = out_dir / "video.mp4"
+    if video_url:
+        download_video(video_url, canonical_video)
+    else:
+        downloaded_video = find_downloaded_video(out_dir)
+        if not downloaded_video:
+            raise RuntimeError("Dreamina succeeded but no video_url was returned and no downloaded mp4 was found.")
+        if downloaded_video != canonical_video:
+            shutil.copyfile(downloaded_video, canonical_video)
     task["submit_id"] = result.get("submit_id")
     task["output_dir"] = str(out_dir)
-    task["video_file"] = str(out_dir / "video.mp4")
-    task["video_url"] = video_url
+    task["video_file"] = str(canonical_video)
+    task["video_url"] = video_url or str(canonical_video)
     write_task("done", task)
     if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
-        update_task_workflow_record(api, task, {"状态": "success", "视频链接": video_url, "错误原因": ""}, "success")
+        update_task_workflow_record(api, task, {"状态": "success", "视频链接": task["video_url"], "错误原因": ""}, "success")
     elif task.get("review_doc_id") and task.get("review_doc_video_cell_id"):
         try:
             api.append_video_link_to_doc(task["review_doc_id"], task["review_doc_video_cell_id"], video_url)
@@ -4247,7 +4270,7 @@ def start_feishu_ws(worker: Worker) -> None:
                         "下面是功能菜单："
                     )
                     notify_text(worker.api, message, owner_open_id)
-                    notify_card(worker.api, welcome_card(initialized), owner_open_id)
+                    notify_card(worker.api, welcome_card(initialized.get("user_ctx") or user_ctx), owner_open_id)
                 except Exception as exc:
                     log(f"Workspace setup failed: {exc}\n{traceback.format_exc()}")
                     notify_text(worker.api, f"❌ 初始化工作区失败\n原因: {exc}", owner_open_id)
