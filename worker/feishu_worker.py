@@ -10,6 +10,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -380,6 +381,44 @@ def http_json(method: str, url: str, payload: Optional[dict] = None, headers: Op
         raise RuntimeError(f"HTTP {exc.code} {url}: {detail}") from exc
 
 
+def http_multipart(method: str, url: str, fields: Dict[str, Any], files: Dict[str, Path], headers: Optional[dict] = None) -> dict:
+    boundary = f"----okivivi-{uuid.uuid4().hex}"
+    body = bytearray()
+
+    def add_line(value: str = "") -> None:
+        body.extend(value.encode("utf-8"))
+        body.extend(b"\r\n")
+
+    for name, value in fields.items():
+        add_line(f"--{boundary}")
+        add_line(f'Content-Disposition: form-data; name="{name}"')
+        add_line()
+        add_line(str(value))
+
+    for name, path in files.items():
+        file_path = Path(path)
+        add_line(f"--{boundary}")
+        add_line(
+            f'Content-Disposition: form-data; name="{name}"; filename="{file_path.name}"'
+        )
+        add_line("Content-Type: application/octet-stream")
+        add_line()
+        body.extend(file_path.read_bytes())
+        body.extend(b"\r\n")
+
+    add_line(f"--{boundary}--")
+    req = urllib.request.Request(url, data=bytes(body), method=method)
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    for key, value in (headers or {}).items():
+        req.add_header(key, value)
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} {url}: {detail}") from exc
+
+
 class FeishuApi:
     def __init__(self) -> None:
         self.app_id = setting("FEISHU_APP_ID")
@@ -439,6 +478,38 @@ class FeishuApi:
 
     def card_to_open_id(self, open_id: str, card: dict) -> None:
         self.send_to("open_id", open_id, "interactive", card)
+
+    def upload_file_to_drive(self, path: Path, name: str = "") -> dict:
+        file_path = Path(path)
+        if not file_path.exists():
+            raise RuntimeError(f"Feishu upload file not found: {file_path}")
+        folder_token = setting("FEISHU_DOC_FOLDER_TOKEN", "").strip()
+        if not folder_token:
+            raise RuntimeError("FEISHU_DOC_FOLDER_TOKEN is required to upload generated videos.")
+        file_name = name or file_path.name
+        data = http_multipart(
+            "POST",
+            f"{self.base}/open-apis/drive/v1/medias/upload_all",
+            {
+                "file_name": file_name,
+                "parent_type": "explorer",
+                "parent_node": folder_token,
+                "size": file_path.stat().st_size,
+            },
+            {"file": file_path},
+            {"Authorization": f"Bearer {self.token()}"},
+        )
+        if data.get("code") != 0:
+            raise RuntimeError(f"Failed to upload file to Feishu drive: {data}")
+        file_token = ((data.get("data") or {}).get("file_token") or "").strip()
+        if not file_token:
+            raise RuntimeError(f"Feishu upload response missing file_token: {data}")
+        doc_base = setting("FEISHU_DOC_BASE", "https://ncnrqomkm3wb.feishu.cn").rstrip("/")
+        return {
+            "file_token": file_token,
+            "url": f"{doc_base}/drive/file/{file_token}",
+            "name": file_name,
+        }
 
     def create_doc(self, title: str, content: str) -> dict:
         payload = {"title": title}
@@ -3290,7 +3361,9 @@ def run_generation(task: dict, api: FeishuApi) -> None:
     task["submit_id"] = result.get("submit_id")
     task["output_dir"] = str(out_dir)
     task["video_file"] = str(canonical_video)
-    task["video_url"] = video_url or str(canonical_video)
+    upload = api.upload_file_to_drive(canonical_video, f"{task_id}.mp4")
+    task["feishu_video_file_token"] = upload["file_token"]
+    task["video_url"] = upload["url"]
     write_task("done", task)
     if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
         update_task_workflow_record(api, task, {"状态": "success", "视频链接": task["video_url"], "错误原因": ""}, "success")
