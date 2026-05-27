@@ -2662,16 +2662,6 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
         },
         "elements": [
             {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        "**选择后生成。**\n"
-                        "生成后在机器人卡片内确认。"
-                    ),
-                },
-            },
-            {
                 "tag": "form",
                 "name": "prompt_form",
                 "elements": [
@@ -2682,13 +2672,6 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "columns": [
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [count_select]},
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [duration_select]},
-                        ],
-                    },
-                    {
-                        "tag": "column_set",
-                        "flex_mode": "none",
-                        "background_style": "default",
-                        "columns": [
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [role_select]},
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [model_select]},
                         ],
@@ -2702,6 +2685,8 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                             "content": "备注内容：填写文案大意，例如宿舍 group project，疲惫但好笑",
                         },
                         "default_value": "",
+                        "multiline": True,
+                        "rows": 4,
                     },
                     {
                         "tag": "button",
@@ -2711,15 +2696,6 @@ def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "type": "primary",
                         "value": {"action": "prompt_form_submit", **card_user_value(user_ctx)},
                     },
-                ],
-            },
-            {
-                "tag": "note",
-                "elements": [
-                    {
-                        "tag": "plain_text",
-                        "content": "生成后会发送机器人确认卡片；表格只记录文案、状态和视频链接。",
-                    }
                 ],
             },
         ],
@@ -2769,16 +2745,6 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
         },
         "elements": [
             {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        "**粘贴完整分镜文案。**\n"
-                        "多条文案用单独一行 `&` 分隔。"
-                    ),
-                },
-            },
-            {
                 "tag": "form",
                 "name": "manual_prompt_form",
                 "elements": [
@@ -2790,6 +2756,7 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [duration_select]},
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [role_select]},
                             {"tag": "column", "width": "weighted", "weight": 1, "elements": [model_select]},
+                            {"tag": "column", "width": "weighted", "weight": 1, "elements": []},
                         ],
                     },
                     {
@@ -2805,14 +2772,6 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "rows": 8,
                     },
                     {
-                        "tag": "input",
-                        "name": "manual_note",
-                        "placeholder": {"tag": "plain_text", "content": "备注，可留空"},
-                        "default_value": "",
-                        "multiline": True,
-                        "rows": 2,
-                    },
-                    {
                         "tag": "button",
                         "name": "manual_prompt_submit",
                         "action_type": "form_submit",
@@ -2820,15 +2779,6 @@ def manual_prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
                         "type": "primary",
                         "value": {"action": "manual_prompt_submit", **card_user_value(user_ctx)},
                     },
-                ],
-            },
-            {
-                "tag": "note",
-                "elements": [
-                    {
-                        "tag": "plain_text",
-                        "content": "上传后会发送机器人确认卡片；多条文案请用单独一行 & 分隔。",
-                    }
                 ],
             },
         ],
