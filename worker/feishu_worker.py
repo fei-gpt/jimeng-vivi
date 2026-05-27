@@ -293,6 +293,10 @@ def request_toast(state: str, started: str, queued: str = "已加入队列，将
     return {"toast": {"type": "success", "content": started}}
 
 
+def ui_open_seen_recently(owner_open_id: str, panel: str, ttl_seconds: int = 5) -> bool:
+    return action_seen_recently(f"ui_open:{owner_open_id}:{panel}", ttl_seconds)
+
+
 def notify_text(api: "FeishuApi", text: str, open_id: str = "") -> None:
     target = str(open_id or "").strip()
     if target:
@@ -2355,7 +2359,13 @@ def compact_task_title(task_id: str) -> str:
     return re.sub(r"^(?:okivivi-|manual-)", "", str(task_id or "")).strip()
 
 
-def script_review_card(task: dict, show_prompt: bool = False, show_dialogue: bool = False, approved: bool = False) -> dict:
+def script_review_card(
+    task: dict,
+    show_prompt: bool = False,
+    show_dialogue: bool = False,
+    approved: bool = False,
+    cancelled: bool = False,
+) -> dict:
     task_id = task["task_id"]
     params = " | ".join(
         [
@@ -2378,6 +2388,8 @@ def script_review_card(task: dict, show_prompt: bool = False, show_dialogue: boo
         "image_library": task.get("image_library", ""),
     })
     base_value = {"task_id": task_id, **user_value}
+    is_approved = approved or bool(task.get("card_approved"))
+    is_cancelled = cancelled or bool(task.get("card_cancelled"))
     elements: List[dict] = [
         {
             "tag": "div",
@@ -2404,7 +2416,19 @@ def script_review_card(task: dict, show_prompt: bool = False, show_dialogue: boo
             "type": "primary",
             "value": {"action": "card_approve_task", "show_prompt": show_prompt, "show_dialogue": show_dialogue, **base_value},
         },
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "已取消" if is_cancelled else "取消"},
+            "type": "danger",
+            "value": {"action": "card_cancel_task", "show_prompt": show_prompt, "show_dialogue": show_dialogue, **base_value},
+        },
     ]
+    if is_approved:
+        actions[2]["text"] = {"tag": "plain_text", "content": "已通过"}
+        actions[2]["type"] = "default"
+    if is_cancelled:
+        actions[3]["text"] = {"tag": "plain_text", "content": "已取消"}
+        actions[3]["type"] = "default"
     elements.append({"tag": "action", "actions": actions})
     if show_prompt:
         elements.append({
@@ -2416,15 +2440,6 @@ def script_review_card(task: dict, show_prompt: bool = False, show_dialogue: boo
             "tag": "div",
             "text": {"tag": "lark_md", "content": f"**对话中文**\n```text\n{dialogue_cn[:4000]}\n```"},
         })
-    elements.append({
-        "tag": "note",
-        "elements": [
-            {
-                "tag": "plain_text",
-                "content": "在机器人卡片内确认；点击“通过”后直接提交即梦生成，表格只用于记录状态和视频链接。",
-            }
-        ],
-    })
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -2432,6 +2447,47 @@ def script_review_card(task: dict, show_prompt: bool = False, show_dialogue: boo
             "template": "turquoise",
         },
         "elements": elements,
+    }
+
+
+def generation_progress_card(task: dict, status: str = "running", detail: str = "") -> dict:
+    task_id = str(task.get("task_id") or "")
+    model = normalize_model(task.get("model_version"))
+    account = str(task.get("jimeng_account") or setting("DEFAULT_JIMENG_ACCOUNT", "") or "(默认)")
+    submit_id = str(task.get("submit_id") or "")
+    status_map = {
+        "queued": ("排队中", "yellow"),
+        "running": ("生成中", "blue"),
+        "submitted": ("已提交即梦", "blue"),
+        "success": ("已完成", "green"),
+        "failed": ("生成失败", "red"),
+    }
+    label, template = status_map.get(status, (status or "处理中", "blue"))
+    lines = [
+        f"**任务** {compact_task_title(task_id)}",
+        f"**状态** {label}",
+        f"**模型** {model}",
+        f"**即梦账号** {account}",
+    ]
+    if submit_id:
+        lines.append(f"**submit_id** {submit_id}")
+    queued_behind = str(task.get("queued_behind_task_id") or "").strip()
+    if queued_behind:
+        lines.append(f"**前序任务** {compact_task_title(queued_behind)}")
+    if detail:
+        lines.append(f"**说明** {detail}")
+    return {
+        "config": {"wide_screen_mode": False},
+        "header": {
+            "template": template,
+            "title": {"tag": "plain_text", "content": "即梦生成进度"},
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "\n".join(lines)},
+            }
+        ],
     }
 
 
@@ -3593,7 +3649,7 @@ def run_generation(task: dict, api: FeishuApi) -> None:
         if dreamina_is_waiting(existing_result) and existing_result.get("submit_id"):
             task["submit_id"] = existing_result.get("submit_id")
             (out_dir / "task.json").write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
-            notify_task_text(api, task, f"⏳ 继续查询已提交的即梦任务\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}")
+            notify_task_card(api, task, generation_progress_card(task, "submitted", "继续查询已提交任务"))
             result = query_dreamina_until_done(str(task.get("submit_id") or ""), out_dir)
 
     shutil.copyfile(task["prompt_file"], out_dir / "prompt.txt")
@@ -3636,7 +3692,7 @@ def run_generation(task: dict, api: FeishuApi) -> None:
             if dreamina_is_waiting(result):
                 task["submit_id"] = result.get("submit_id")
                 (out_dir / "task.json").write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
-                notify_task_text(api, task, f"⏳ 即梦任务已提交，正在排队/生成中\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}")
+                notify_task_card(api, task, generation_progress_card(task, "submitted", "即梦已接收，正在排队或生成"))
                 result = query_dreamina_until_done(str(task.get("submit_id") or ""), out_dir)
                 if result.get("gen_status") == "success":
                     break
@@ -3672,7 +3728,7 @@ def run_generation(task: dict, api: FeishuApi) -> None:
         except Exception as exc:
             log(f"Failed to write video link to review doc for {task_id}: {exc}")
             api.append_doc_text(task["review_doc_id"], None, f"视频链接：{video_url}")
-    notify_task_text(api, task, f"✅ 即梦视频生成成功\n任务: {task_id}\nsubmit_id: {task.get('submit_id')}")
+    notify_task_card(api, task, generation_progress_card(task, "success", "视频已生成，结果如下"))
     notify_task_card(api, task, result_card(task))
     notify_task_card(api, task, result_status_card(str(task.get("owner_open_id") or "")))
 
@@ -3934,6 +3990,7 @@ class Worker:
                 write_task("reviewing", task)
                 if previous != running_task_id:
                     log(f"Queued task by active Jimeng account: account={account}; active={self._active_account}; task={task_id}; running={running_task_id}")
+                    notify_task_card(self.api, task, generation_progress_card(task, "queued", "等待当前即梦账号任务完成"))
                 return
             running_task_id = self._running_lanes.get(lane)
             if running_task_id and running_task_id != task_id:
@@ -3945,14 +4002,18 @@ class Worker:
                 write_task("reviewing", task)
                 if previous != running_task_id:
                     log(f"Queued task by Jimeng model lane: lane={lane}; task={task_id}; running={running_task_id}")
+                    notify_task_card(self.api, task, generation_progress_card(task, "queued", "等待同模型通道释放"))
                 return
             if not self._active_account and not self.acquire_account_lock(account, task_id):
+                previous = task.get("queued_behind_task_id")
                 task["queued_for_account"] = account
                 task["queued_for_model"] = model
                 task["queued_behind_task_id"] = "external_worker_or_stale_lock"
                 task["queued_at"] = task.get("queued_at") or now()
                 write_task("reviewing", task)
-                log(f"Queued task by Jimeng account file lock: account={account}; task={task_id}")
+                if previous != "external_worker_or_stale_lock":
+                    log(f"Queued task by Jimeng account file lock: account={account}; task={task_id}")
+                    notify_task_card(self.api, task, generation_progress_card(task, "queued", "等待即梦账号锁释放"))
                 return
             self._active_account = account
             self._running_lanes[lane] = task_id
@@ -3960,8 +4021,7 @@ class Worker:
         move_task(path, "running", task)
         if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
             update_task_workflow_record(self.api, task, {"状态": "running", "错误原因": ""}, "running")
-        mode = "VIP 并发通道" if model_allows_parallel(model) else "普通模型单并发队列"
-        notify_task_text(self.api, task, f"▶️ 已通过审核，开始生成: {task_id}\n即梦账号: {account}\n模型: {model}\n队列: {mode}")
+        notify_task_card(self.api, task, generation_progress_card(task, "running", "已进入即梦生成流程"))
         thread = threading.Thread(target=self._run_generation_safe, args=(task,), daemon=True)
         thread.start()
 
@@ -4243,11 +4303,7 @@ class Worker:
                     running_path.unlink()
                 if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
                     update_task_workflow_record(self.api, task, {"状态": "", "错误原因": ""}, "deferred")
-                notify_task_text(
-                    self.api,
-                    task,
-                    f"⏳ 即梦账号并发已满，任务将在约 {retry_delay // 60} 分钟后自动重试\n任务: {task_id}",
-                )
+                notify_task_card(self.api, task, generation_progress_card(task, "queued", f"即梦账号并发已满，约 {retry_delay // 60} 分钟后自动重试"))
                 log(f"Task deferred by Dreamina concurrency limit {task_id}: {exc}")
                 return
             task["fail_reason"] = str(exc)
@@ -4257,7 +4313,7 @@ class Worker:
                 running_path.unlink()
             if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
                 update_task_workflow_record(self.api, task, {"状态": "failed", "错误原因": str(exc)}, "failure")
-            notify_task_text(self.api, task, f"❌ 即梦视频生成失败\n任务: {task_id}\n原因: {exc}")
+            notify_task_card(self.api, task, generation_progress_card(task, "failed", str(exc)))
             log(f"Task failed {task_id}: {exc}\n{traceback.format_exc()}")
         finally:
             with self._queue_lock:
@@ -4556,6 +4612,8 @@ def start_feishu_ws(worker: Worker) -> None:
                 if not user_workspace_available(worker.api, user_ctx):
                     reply_card(workspace_setup_card(user_ctx))
                     return
+                if ui_open_seen_recently(sender_open_id, "manual_prompt"):
+                    return
                 reply_card(manual_prompt_entry_card(user_ctx))
             elif text in {"3", "动画生成", "生成动画"}:
                 reply_text("动画生成模块已预留，等待后续开发接入。")
@@ -4566,6 +4624,8 @@ def start_feishu_ws(worker: Worker) -> None:
             elif text in {"1", "文案生成", "生成文案", "生成脚本"}:
                 if not user_workspace_available(worker.api, user_ctx):
                     reply_card(workspace_setup_card(user_ctx))
+                    return
+                if ui_open_seen_recently(sender_open_id, "prompt_generate"):
                     return
                 reply_card(prompt_entry_card(user_ctx))
             elif text:
@@ -4591,6 +4651,8 @@ def start_feishu_ws(worker: Worker) -> None:
                     return card_response({
                         "toast": {"type": "error", "content": "请先初始化工作区"}
                     })
+                if ui_open_seen_recently(owner_open_id, "prompt_generate"):
+                    return card_response({})
                 notify_card(worker.api, prompt_entry_card(user_ctx), owner_open_id)
                 return card_response({
                     "toast": {"type": "success", "content": "已打开文案生成"}
@@ -4601,6 +4663,8 @@ def start_feishu_ws(worker: Worker) -> None:
                     return card_response({
                         "toast": {"type": "error", "content": "请先初始化工作区"}
                     })
+                if ui_open_seen_recently(owner_open_id, "manual_prompt"):
+                    return card_response({})
                 notify_card(worker.api, manual_prompt_entry_card(user_ctx), owner_open_id)
                 return card_response({
                     "toast": {"type": "success", "content": "已打开文案输入"}
@@ -4797,7 +4861,7 @@ def start_feishu_ws(worker: Worker) -> None:
             )
             state = USER_REQUESTS.submit(owner_open_id, signature, "文案自行输入", submit_manual_prompt_async)
             return card_response(request_toast(state, "已收到，正在上传到工作流表"))
-        if value and value.get("action") in {"toggle_script_prompt", "toggle_dialogue_cn", "card_approve_task"}:
+        if value and value.get("action") in {"toggle_script_prompt", "toggle_dialogue_cn", "card_approve_task", "card_cancel_task"}:
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
             task_id = str(value.get("task_id") or "").strip()
@@ -4822,7 +4886,27 @@ def start_feishu_ws(worker: Worker) -> None:
             show_prompt = str(value.get("show_prompt")).lower() == "true" or value.get("show_prompt") is True
             show_dialogue = str(value.get("show_dialogue")).lower() == "true" or value.get("show_dialogue") is True
             action = str(value.get("action") or "")
+            if action == "card_cancel_task":
+                task["card_cancelled"] = True
+                task["card_cancelled_at"] = now()
+                task["fail_reason"] = "用户在机器人卡片取消。"
+                try:
+                    update_task_workflow_record(worker.api, task, {"状态": "cancelled", "错误原因": task["fail_reason"]}, "cancelled")
+                except Exception as exc:
+                    log(f"Failed to update cancelled task record {task_id}: {exc}")
+                current = status_for_task(task_id) or "reviewing"
+                if current not in {"running", "done", "failed"}:
+                    move_task(path, "failed", task)
+                else:
+                    write_task(current, task)
+                return card_response({
+                    "card": script_review_card(task, show_prompt=show_prompt, show_dialogue=show_dialogue, cancelled=True),
+                })
             if action == "card_approve_task":
+                if task.get("card_cancelled"):
+                    return card_response({
+                        "card": script_review_card(task, show_prompt=show_prompt, show_dialogue=show_dialogue, cancelled=True),
+                    })
                 task["card_approved"] = True
                 task["card_approved_at"] = now()
                 write_task(status_for_task(task_id) or "reviewing", task)
@@ -4832,11 +4916,10 @@ def start_feishu_ws(worker: Worker) -> None:
 
                 signature = request_signature("card_approve_task", value, ["task_id"])
                 state = USER_REQUESTS.submit(owner_open_id, signature, "卡片通过生成", approve_from_card)
-                response = request_toast(state, "已通过，正在提交即梦生成")
+                response = {} if state != "queued" else {"toast": {"type": "info", "content": "已加入队列，将按顺序处理"}}
                 response["card"] = script_review_card(task, show_prompt=show_prompt, show_dialogue=show_dialogue, approved=True)
                 return card_response(response)
             return card_response({
-                "toast": {"type": "success", "content": "已更新卡片"},
                 "card": script_review_card(task, show_prompt=show_prompt, show_dialogue=show_dialogue),
             })
         if value and value.get("action") in {"result_download", "result_location", "result_jump_first"}:
