@@ -2577,6 +2577,37 @@ def result_status_card(owner_open_id: str = "") -> dict:
     }
 
 
+def startup_targets() -> List[str]:
+    users = read_users_config().get("users", {})
+    targets = [
+        open_id
+        for open_id, config in users.items()
+        if open_id and isinstance(config, dict) and config.get("enabled", True)
+    ]
+    default_open_id = setting("FEISHU_BOT_OPEN_ID", "").strip()
+    if default_open_id and default_open_id not in targets:
+        targets.append(default_open_id)
+    return targets
+
+
+def send_startup_menu(api: FeishuApi) -> None:
+    targets = startup_targets()
+    if not targets:
+        log("Startup menu skipped: no configured users.")
+        return
+    for open_id in targets:
+        try:
+            ctx = ensure_user_config(open_id)
+            if user_workspace_ready(ctx):
+                api.card_to_open_id(open_id, welcome_card(ctx))
+            else:
+                api.card_to_open_id(open_id, workspace_setup_card(ctx))
+                api.card_to_open_id(open_id, welcome_card(ctx))
+            log(f"Startup menu sent to {open_id}")
+        except Exception as exc:
+            log(f"Startup menu skipped for {open_id}: {exc}")
+
+
 def prompt_entry_card(user_ctx: Optional[dict] = None) -> dict:
     default_model = setting("DEFAULT_MODEL", "seedance2.0fast_vip")
     count_select = {
@@ -4974,13 +5005,13 @@ def main() -> int:
     scanner.start()
     review_scanner = threading.Thread(target=reviewing_scanner, args=(worker,), daemon=True)
     review_scanner.start()
-    if setting("STARTUP_NOTIFY", "0").strip() == "1":
+    if setting("STARTUP_NOTIFY", "1").strip() == "1":
         try:
-            api.text("即梦视频生成 worker 已启动。\n\n" + welcome_text())
+            send_startup_menu(api)
         except Exception as exc:
             log(f"Startup outbound message skipped: {exc}")
     else:
-        log("Startup outbound message disabled.")
+        log("Startup menu disabled.")
     start_feishu_ws(worker)
     return 0
 
