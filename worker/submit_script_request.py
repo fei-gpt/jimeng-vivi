@@ -7,7 +7,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-from create_task import ROOT, clamp_duration
+try:
+    from create_task import ROOT, clamp_duration
+except ModuleNotFoundError:
+    from worker.create_task import ROOT, clamp_duration
 
 
 REQUESTS = ROOT / "script_requests"
@@ -36,6 +39,15 @@ def main() -> int:
     parser.add_argument("--image-variant", default="", help="Image group hint: auto, blue, pink, or all.")
     parser.add_argument("--character-mode", default="", help="Character mode: single_vivi or bree_sunny.")
     parser.add_argument("--model-version", default="", help="Dreamina multimodal model version.")
+    parser.add_argument("--tenant-id", default="", help="Tenant/user workspace id.")
+    parser.add_argument("--owner-open-id", default="", help="Feishu sender open_id that owns this request.")
+    parser.add_argument("--jimeng-account", default="", help="Jimeng account profile for generated tasks.")
+    parser.add_argument("--script-app-token", default="", help="Tenant script bitable app_token.")
+    parser.add_argument("--script-table-id", default="", help="Tenant script bitable table_id.")
+    parser.add_argument("--video-app-token", default="", help="Tenant video bitable app_token.")
+    parser.add_argument("--video-table-id", default="", help="Tenant video bitable table_id.")
+    parser.add_argument("--drive-video-folder-token", default="", help="Tenant video Drive folder token.")
+    parser.add_argument("--drive-tables-folder-token", default="", help="Tenant table Drive folder token.")
     parser.add_argument("--payload-file", default="", help="JSON payload file with count/duration/brief/product fields.")
     args = parser.parse_args()
 
@@ -54,6 +66,15 @@ def main() -> int:
         args.image_variant = str(payload.get("image_variant") or args.image_variant or "")
         args.character_mode = str(payload.get("character_mode") or args.character_mode or "")
         args.model_version = str(payload.get("model_version") or args.model_version or "")
+        args.tenant_id = str(payload.get("tenant_id") or args.tenant_id or "")
+        args.owner_open_id = str(payload.get("owner_open_id") or args.owner_open_id or "")
+        args.jimeng_account = str(payload.get("jimeng_account") or args.jimeng_account or "")
+        args.script_app_token = str(payload.get("script_app_token") or args.script_app_token or "")
+        args.script_table_id = str(payload.get("script_table_id") or args.script_table_id or "")
+        args.video_app_token = str(payload.get("video_app_token") or args.video_app_token or "")
+        args.video_table_id = str(payload.get("video_table_id") or args.video_table_id or "")
+        args.drive_video_folder_token = str(payload.get("drive_video_folder_token") or args.drive_video_folder_token or "")
+        args.drive_tables_folder_token = str(payload.get("drive_tables_folder_token") or args.drive_tables_folder_token or "")
         if payload.get("product_payload") and not args.product_json:
             args.product_json = json.dumps(payload.get("product_payload"), ensure_ascii=False)
 
@@ -84,6 +105,15 @@ def main() -> int:
         "image_variant": args.image_variant.strip().lower(),
         "character_mode": args.character_mode.strip().lower(),
         "model_version": args.model_version.strip(),
+        "tenant_id": args.tenant_id.strip(),
+        "owner_open_id": args.owner_open_id.strip(),
+        "jimeng_account": args.jimeng_account.strip(),
+        "script_app_token": args.script_app_token.strip(),
+        "script_table_id": args.script_table_id.strip(),
+        "video_app_token": args.video_app_token.strip(),
+        "video_table_id": args.video_table_id.strip(),
+        "drive_video_folder_token": args.drive_video_folder_token.strip(),
+        "drive_tables_folder_token": args.drive_tables_folder_token.strip(),
         "status": "running",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -111,6 +141,19 @@ def main() -> int:
     model_version = args.model_version.strip()
     if model_version:
         command += ["--model-version", model_version]
+    for flag, value in [
+        ("--tenant-id", args.tenant_id.strip()),
+        ("--owner-open-id", args.owner_open_id.strip()),
+        ("--jimeng-account", args.jimeng_account.strip()),
+        ("--script-app-token", args.script_app_token.strip()),
+        ("--script-table-id", args.script_table_id.strip()),
+        ("--video-app-token", args.video_app_token.strip()),
+        ("--video-table-id", args.video_table_id.strip()),
+        ("--drive-video-folder-token", args.drive_video_folder_token.strip()),
+        ("--drive-tables-folder-token", args.drive_tables_folder_token.strip()),
+    ]:
+        if value:
+            command += [flag, value]
 
     LOGS.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(

@@ -13,6 +13,7 @@ logs
 outputs
 tasks
 script_requests
+reset_archive
 prompts/generated
 prompts/manual
 prompts/bitable

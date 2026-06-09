@@ -3,6 +3,12 @@ set -euo pipefail
 
 cd "$HOME/okivivi"
 
+if [ "${OKIVIVI_ENABLE_WINDOWS_WORKER:-0}" != "1" ]; then
+  echo "[sync] Windows worker is disabled. Stopping any old Feishu worker and exiting."
+  ps -ef | grep '[f]eishu_worker.py' | awk '{print $2}' | xargs -r kill || true
+  exit 0
+fi
+
 echo "[sync] syncing .env and worker files"
 cp /mnt/c/Users/aaa/Documents/okivivi/.env "$HOME/okivivi/.env"
 cp /mnt/c/Users/aaa/Documents/okivivi/worker/feishu_worker.py "$HOME/okivivi/worker/feishu_worker.py"

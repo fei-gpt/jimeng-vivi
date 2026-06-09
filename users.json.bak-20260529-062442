@@ -1,0 +1,54 @@
+{
+  "users": {
+    "ou_402611cd232d4982f37708939a575452": {
+      "open_id": "ou_402611cd232d4982f37708939a575452",
+      "initialized": true,
+      "name": "飞",
+      "owner_name": "飞",
+      "drive_user_folder_token": "PIyjf9XxCl2eNhdn5xecctsmnff",
+      "drive_video_folder_token": "RVbafxADClGOgMd8gI3cT1lDn3Z",
+      "drive_tables_folder_token": "NbjMfmBHcldzZadUZsWcyYaInAh",
+      "drive_user_folder_name": "飞",
+      "script_app_token": "ONFSbpTiaau1ugst15Dc0GhWnLb",
+      "script_table_id": "tblsq83DfNNmV3Yr",
+      "video_app_token": "ONFSbpTiaau1ugst15Dc0GhWnLb",
+      "video_table_id": "tblsq83DfNNmV3Yr",
+      "script_url": "https://ncnrqomkm3wb.feishu.cn/base/ONFSbpTiaau1ugst15Dc0GhWnLb",
+      "video_url": "https://ncnrqomkm3wb.feishu.cn/base/ONFSbpTiaau1ugst15Dc0GhWnLb",
+      "workspace_initialized_at": "2026-05-28T07:34:42",
+      "jimeng_account": "ou_402611cd232d4982f37708939a575452_acco"
+    },
+    "ou_a9a744f014a8420128376502f3821548": {
+      "open_id": "ou_a9a744f014a8420128376502f3821548",
+      "initialized": true,
+      "script_app_token": "Mi3MbFHk4aHjvgsycfZc7cPSnGd",
+      "script_table_id": "tblFhO3q6E65Ae8x",
+      "video_app_token": "Mi3MbFHk4aHjvgsycfZc7cPSnGd",
+      "video_table_id": "tblFhO3q6E65Ae8x",
+      "script_url": "https://ncnrqomkm3wb.feishu.cn/base/Mi3MbFHk4aHjvgsycfZc7cPSnGd",
+      "video_url": "https://ncnrqomkm3wb.feishu.cn/base/Mi3MbFHk4aHjvgsycfZc7cPSnGd",
+      "workspace_initialized_at": "2026-05-29T05:44:06",
+      "drive_user_folder_token": "MxsWfSMyAlCf6adAyaDcNNQCntd",
+      "drive_tables_folder_token": "AAxGfhxlalb84TdRwemcNaPvnMg",
+      "drive_video_folder_token": "PbRVfTwmbl4RVAdWaRTcLl2ennX"
+    },
+    "ou_9a8ca60bd9c7c11cc1bf3b84edd8898d": {
+      "open_id": "ou_9a8ca60bd9c7c11cc1bf3b84edd8898d",
+      "initialized": true,
+      "name": "shen",
+      "owner_name": "shen",
+      "drive_user_folder_token": "OJ4wflEf1l4HpMd5Qgsc4bVUnag",
+      "drive_video_folder_token": "BrB6fpbdrlPBaFdNBzecZTdVntf",
+      "drive_tables_folder_token": "GEDRffH8FlEOppd1PRXcLPYRnQg",
+      "drive_user_folder_name": "shen",
+      "script_app_token": "TSYgbSYTyapAZushjVWc3OmgnXe",
+      "script_table_id": "tbl4rn34ldA4BA22",
+      "video_app_token": "TSYgbSYTyapAZushjVWc3OmgnXe",
+      "video_table_id": "tbl4rn34ldA4BA22",
+      "script_url": "https://ncnrqomkm3wb.feishu.cn/base/TSYgbSYTyapAZushjVWc3OmgnXe",
+      "video_url": "https://ncnrqomkm3wb.feishu.cn/base/TSYgbSYTyapAZushjVWc3OmgnXe",
+      "workspace_initialized_at": "2026-05-28T10:47:15",
+      "jimeng_account": "ou_9a8ca60bd9c7c11cc1bf3b84edd8898d_acco"
+    }
+  }
+}

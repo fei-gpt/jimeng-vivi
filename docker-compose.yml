@@ -4,6 +4,7 @@ services:
   okivivi-worker:
     build:
       context: .
+      network: host
     container_name: okivivi-worker
     restart: unless-stopped
     env_file:
@@ -12,12 +13,14 @@ services:
       IMAGE_LIBRARY_DIR: /app/vivi-image
       SERVER_IMAGE_SOURCE_DIR: /app/vivi-image
       JIMENG_ACCOUNT_ROOT: /app/accounts/jimeng
-      SCRIPT_AGENT_DOC: /app/deepseek/OKIVIVI-text-zong.md
-      SCRIPT_AGENT_DOCS: /app/deepseek/OKIVIVI-text-zong.md;/app/deepseek/OKIVIVI-text-assistive.md
+      SCRIPT_AGENT_DOC: /app/deepseek/OKIVIVI-feishu-current.md
+      SCRIPT_AGENT_DOCS: /app/deepseek/OKIVIVI-feishu-current.md
     volumes:
+      - ./worker:/app/worker
       - ./users.json:/app/users.json
       - ./bitable_state.json:/app/bitable_state.json
       - ./vivi-image:/app/vivi-image
+      - ./deepseek:/app/deepseek
       - ./accounts:/app/accounts
       - ./tenants:/app/tenants
       - ./tasks:/app/tasks

@@ -9,6 +9,7 @@ from typing import List
 
 ROOT = Path(__file__).resolve().parents[1]
 TASKS = ROOT / "tasks" / "pending"
+TENANTS = ROOT / "tenants"
 DEFAULT_IMAGE_LIBRARY = ROOT / "vivi-image"
 
 IMAGE_PAIRS = {
@@ -45,6 +46,30 @@ def clamp_duration(value: str) -> int:
 def slug(value: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", value).strip("-")
     return cleaned[:40] or "task"
+
+
+def tenant_slug(value: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value or "")).strip("-").lower()
+    return cleaned[:80] or ""
+
+
+def tenant_root(tenant_id: str) -> Path:
+    cleaned = tenant_slug(tenant_id)
+    return TENANTS / cleaned if cleaned else ROOT
+
+
+def tenant_tasks_dir(tenant_id: str) -> Path:
+    base = tenant_root(tenant_id)
+    return TASKS if base == ROOT else base / "tasks" / "pending"
+
+
+def task_id_exists(tenant_id: str, task_id: str) -> bool:
+    base = tenant_root(tenant_id)
+    root = ROOT / "tasks" if base == ROOT else base / "tasks"
+    for status in ["pending", "reviewing", "running", "done", "failed", "needs_revision"]:
+        if (root / status / f"{task_id}.json").exists():
+            return True
+    return False
 
 
 def detect_variant(task_id: str, prompt_text: str) -> str:
@@ -86,10 +111,20 @@ def main() -> int:
     parser.add_argument("--image-dir", default=ENV.get("IMAGE_LIBRARY_DIR", str(DEFAULT_IMAGE_LIBRARY)), help="Image library used when --image is omitted.")
     parser.add_argument("--image-count", default=ENV.get("DEFAULT_IMAGE_COUNT", "2"), help="Compatibility option; fixed pairs are used by default.")
     parser.add_argument("--duration", default="15", help="Duration in seconds, clamped to 4-15. Default: 15.")
-    parser.add_argument("--account", default=ENV.get("DEFAULT_JIMENG_ACCOUNT", ""), help="Jimeng account profile name.")
+    parser.add_argument("--account", default="", help="Jimeng account profile name.")
+    parser.add_argument("--tenant-id", default=ENV.get("DEFAULT_TENANT_ID", ""), help="Tenant/user workspace id.")
+    parser.add_argument("--owner-open-id", default="", help="Feishu sender open_id that owns this task.")
+    parser.add_argument("--script-app-token", default="", help="Tenant script bitable app_token.")
+    parser.add_argument("--script-table-id", default="", help="Tenant script bitable table_id.")
+    parser.add_argument("--video-app-token", default="", help="Tenant video bitable app_token.")
+    parser.add_argument("--video-table-id", default="", help="Tenant video bitable table_id.")
+    parser.add_argument("--drive-video-folder-token", default="", help="Tenant video Drive folder token.")
+    parser.add_argument("--drive-tables-folder-token", default="", help="Tenant table Drive folder token.")
     parser.add_argument("--task-id", default="", help="Optional task id.")
     parser.add_argument("--dry-run", action="store_true", help="Print task JSON without writing it to tasks/pending.")
     args = parser.parse_args()
+    if args.owner_open_id and not args.account.strip():
+        raise SystemExit("Missing Jimeng account for this Feishu user. Please add and save a Jimeng account first.")
 
     prompt = Path(args.prompt).expanduser()
     if not prompt.exists():
@@ -98,8 +133,12 @@ def main() -> int:
     if not prompt_text:
         raise SystemExit(f"Prompt file is empty: {prompt}")
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M")
     task_id = args.task_id or f"{timestamp}-{slug(prompt.stem)}"
+    duplicate_index = 2
+    while task_id_exists(args.tenant_id, task_id):
+        task_id = f"{args.task_id or timestamp + '-' + slug(prompt.stem)}-{duplicate_index}"
+        duplicate_index += 1
 
     if args.image:
         images = [Path(item).expanduser() for item in args.image]
@@ -110,7 +149,8 @@ def main() -> int:
         if not image.exists():
             raise SystemExit(f"Image file does not exist: {image}")
 
-    TASKS.mkdir(parents=True, exist_ok=True)
+    tasks_dir = tenant_tasks_dir(args.tenant_id)
+    tasks_dir.mkdir(parents=True, exist_ok=True)
     task = {
         "task_id": task_id,
         "prompt_file": str(prompt),
@@ -121,14 +161,23 @@ def main() -> int:
         "ratio": "9:16",
         "model_version": "seedance2.0fast_vip",
         "video_resolution": "720p",
-        "jimeng_account": args.account,
+        "jimeng_account": args.account or ("" if args.owner_open_id else ENV.get("DEFAULT_JIMENG_ACCOUNT", "")),
+        "tenant_id": args.tenant_id,
+        "owner_open_id": args.owner_open_id,
+        "user_script_app_token": args.script_app_token,
+        "user_script_table_id": args.script_table_id,
+        "user_video_app_token": args.video_app_token,
+        "user_video_table_id": args.video_table_id,
+        "drive_video_folder_token": args.drive_video_folder_token,
+        "drive_tables_folder_token": args.drive_tables_folder_token,
+        "data_isolation_level": "physical" if args.tenant_id else "legacy",
         "status": "pending",
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     if args.dry_run:
         print(json.dumps(task, ensure_ascii=False, indent=2))
     else:
-        path = TASKS / f"{task_id}.json"
+        path = tasks_dir / f"{task_id}.json"
         path.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
         print(path)
     return 0

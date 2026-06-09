@@ -26,8 +26,10 @@ worker/
   create_task.py            # 本地任务创建
   prompt_ui_server.py       # 本地简易 UI，可选
 deepseek/
-  OKIVIVI-text-zong.md      # 主文案规则
-  OKIVIVI-text-assistive.md # 辅助文案规则
+  OKIVIVI-feishu-current.md # 15s/30s DeepSeek 文案规则
+  OKIVIVI-6s-current.md     # 5-8s 短文案规则
+tools/
+  replace_deepseek_rule_docs.sh # 替换规则文档：先删旧文件，再复制当前两份规则
 vivi-image/
   okivivi-blue.jpg
   okivivi-blue1.jpg

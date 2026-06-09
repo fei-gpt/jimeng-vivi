@@ -2,6 +2,11 @@
 set -u
 
 echo "[ubuntu] entered bash"
+if [ "${OKIVIVI_ENABLE_WINDOWS_WORKER:-0}" != "1" ]; then
+  echo "[ubuntu] Windows worker is disabled. Set OKIVIVI_ENABLE_WINDOWS_WORKER=1 only if this PC is the active worker host."
+  ps -ef | grep '[f]eishu_worker.py' | awk '{print $2}' | xargs -r kill || true
+  exit 0
+fi
 cd ~/okivivi || exit 10
 echo "[ubuntu] cwd=$(pwd)"
 

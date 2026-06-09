@@ -9,11 +9,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
 
-from create_task import ROOT, clamp_duration
+try:
+    from create_task import ROOT, clamp_duration
+except ModuleNotFoundError:
+    from worker.create_task import ROOT, clamp_duration
 
 
 PAYLOADS = ROOT / "script_requests" / "ui_payloads"
 STATE_FILE = ROOT / "bitable_state.json"
+USERS_FILE = ROOT / "users.json"
 
 
 HTML = r"""<!doctype html>
@@ -306,6 +310,32 @@ def load_state() -> Dict[str, Any]:
         return {}
 
 
+def load_default_user_context() -> Dict[str, Any]:
+    if not USERS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(USERS_FILE.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    users = data.get("users") if isinstance(data, dict) else {}
+    if not isinstance(users, dict) or not users:
+        return {}
+    for open_id, config in users.items():
+        if isinstance(config, dict) and config.get("enabled", True):
+            return {
+                "owner_open_id": str(open_id),
+                "tenant_id": str(config.get("tenant_id") or open_id),
+                "jimeng_account": str(config.get("jimeng_account") or ""),
+                "script_app_token": str(config.get("script_app_token") or ""),
+                "script_table_id": str(config.get("script_table_id") or ""),
+                "video_app_token": str(config.get("video_app_token") or ""),
+                "video_table_id": str(config.get("video_table_id") or ""),
+                "drive_video_folder_token": str(config.get("drive_video_folder_token") or ""),
+                "drive_tables_folder_token": str(config.get("drive_tables_folder_token") or ""),
+            }
+    return {}
+
+
 def write_json(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -348,6 +378,7 @@ def build_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     if character_mode not in {"single_vivi", "bree_sunny"}:
         character_mode = "single_vivi"
     image_variant = "all" if character_mode == "bree_sunny" else "auto"
+    user_ctx = load_default_user_context()
     return {
         "count": count,
         "duration": clamp_duration(str(min(script_duration, 15))),
@@ -360,6 +391,15 @@ def build_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "product_id": clean_text(data.get("product_id")),
         "product_url": clean_text(data.get("product_url")),
         "product_payload": {},
+        "tenant_id": clean_text(data.get("tenant_id")) or user_ctx.get("tenant_id", ""),
+        "owner_open_id": clean_text(data.get("owner_open_id")) or user_ctx.get("owner_open_id", ""),
+        "jimeng_account": clean_text(data.get("jimeng_account")) or user_ctx.get("jimeng_account", ""),
+        "script_app_token": clean_text(data.get("script_app_token")) or user_ctx.get("script_app_token", ""),
+        "script_table_id": clean_text(data.get("script_table_id")) or user_ctx.get("script_table_id", ""),
+        "video_app_token": clean_text(data.get("video_app_token")) or user_ctx.get("video_app_token", ""),
+        "video_table_id": clean_text(data.get("video_table_id")) or user_ctx.get("video_table_id", ""),
+        "drive_video_folder_token": clean_text(data.get("drive_video_folder_token")) or user_ctx.get("drive_video_folder_token", ""),
+        "drive_tables_folder_token": clean_text(data.get("drive_tables_folder_token")) or user_ctx.get("drive_tables_folder_token", ""),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
 

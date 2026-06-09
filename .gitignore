@@ -2,6 +2,7 @@
 .env
 users.json
 bitable_state.json
+worker_instance.json
 accounts/
 tenants/
 .deploy/
@@ -41,3 +42,8 @@ Thumbs.db
 .idea/
 .vscode/
 typescript
+*.tgz
+reset_archive/
+okivivi-accounts.tgz
+okivivi-runtime.tgz
+okivivi-source.tgz
