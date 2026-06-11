@@ -5055,7 +5055,14 @@ def is_dreamina_concurrency_error(message: str) -> bool:
 
 def is_dreamina_retryable_wait_error(message: str) -> bool:
     text = str(message or "").lower()
-    return "dreamina still querying after" in text
+    retryable_tokens = [
+        "dreamina still querying after",
+        "context deadline exceeded",
+        "client.timeout exceeded",
+        "awaiting headers",
+        "get_history_by_ids",
+    ]
+    return any(token in text for token in retryable_tokens)
 
 
 def is_dreamina_pre_tns_error(message: str) -> bool:
