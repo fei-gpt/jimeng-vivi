@@ -32,6 +32,11 @@ prompts/generated/
 prompts/manual/
 prompts/bitable/
 
+# One-off maintenance scripts may contain real tenant/open_id data.
+tools/backfill_dialogue_cn.py
+tools/fill_0956_manual_dialogue.py
+tools/fix_0956_tasks.py
+
 # Large or non-current reference images
 vivi-image/animation*.jpg
 vivi-image/animation*.png
