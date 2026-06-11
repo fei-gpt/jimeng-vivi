@@ -37,7 +37,7 @@ def main() -> int:
     parser.add_argument("--product-url", default="", help="Reserved for server product workflow.")
     parser.add_argument("--product-json", default="", help="Reserved product payload JSON string.")
     parser.add_argument("--image-variant", default="", help="Image group hint: auto, blue, pink, or all.")
-    parser.add_argument("--character-mode", default="", help="Character mode: single_vivi or bree_sunny.")
+    parser.add_argument("--character-mode", default="", help="Character mode: single_vivi.")
     parser.add_argument("--model-version", default="", help="Dreamina multimodal model version.")
     parser.add_argument("--tenant-id", default="", help="Tenant/user workspace id.")
     parser.add_argument("--owner-open-id", default="", help="Feishu sender open_id that owns this request.")

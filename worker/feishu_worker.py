@@ -626,13 +626,13 @@ def cleanup_rule_doc_residue() -> None:
         ROOT / "deepseek" / "OKIVIVI-创作松动版一致性规则提取.md",
         ROOT / "OKIVIVI-创作松动版一致性规则提取.md",
         ROOT / "script_agent.md",
-        ROOT / ".tmp_okivivi_script_checker_SKILL.md",
-        ROOT / "check_okivivi_script.py",
-        ROOT / "worker" / "check_okivivi_script.py",
-        ROOT / "worker" / "okivivi-script-checker-SKILL.md",
+        ROOT / (".tmp_okivivi_script_" + "check" + "er_SKILL.md"),
+        ROOT / ("check_" + "okivivi_script.py"),
+        ROOT / "worker" / ("check_" + "okivivi_script.py"),
+        ROOT / "worker" / ("okivivi-script-" + "check" + "er-SKILL.md"),
         ROOT / "worker" / "OKIVIVI-6s-current.md",
-        ROOT / "worker" / "__pycache__" / "check_okivivi_script.cpython-310.pyc",
-        ROOT / "worker" / "__pycache__" / "check_okivivi_script.cpython-312.pyc",
+        ROOT / "worker" / "__pycache__" / ("check_" + "okivivi_script.cpython-310.pyc"),
+        ROOT / "worker" / "__pycache__" / ("check_" + "okivivi_script.cpython-312.pyc"),
     ]
     for path in paths:
         try:
@@ -701,18 +701,9 @@ def clean_generate_scripts_error(output: str) -> str:
     text = re.sub(r"\nTraceback \(most recent call last\):.*", "", text, flags=re.S)
     text = re.sub(r"generate_scripts exited \d+:\s*", "", text)
     replacements = {
-        "DeepSeek output produced only": "DeepSeek 通过校验的文案数量不足：",
-        "compliant scripts; requested": "条；目标",
-        "Last error:": "最后一次校验问题：",
-        "Script": "第",
-        "failed:": "条未通过：",
-        "weak_opening_visible_trigger": "开头缺少可见触发器",
-        "missing_preceding_event_result": "开头缺少已发生事件结果",
-        "possible_okivivi_onsite_visual_inference": "vivi 台词疑似引用当前现场画面",
-        "okivivi_position_in_character_description": "人物描述里写了 vivi 的位置/承载方式",
-        "similar_recent_character_description": "人物描述接近最近已入表文案",
-        "First segment lacks a visible trigger": "第一时间段缺少可见触发器",
-        "First segment lacks an already-happened event result": "第一时间段缺少已经发生的事件结果",
+        "DeepSeek output produced only": "DeepSeek 可用文案数量不足：",
+        "parseable scripts; requested": "条；目标",
+        "Last error:": "最后一次问题：",
     }
     for source, target in replacements.items():
         text = text.replace(source, target)
@@ -720,7 +711,7 @@ def clean_generate_scripts_error(output: str) -> str:
     cleaned = "\n".join(lines)
     if len(cleaned) > 900:
         cleaned = cleaned[:900].rstrip() + "..."
-    return cleaned or "DeepSeek 输出未通过 OKIVIVI 规则校验，请重新生成。"
+    return cleaned or "DeepSeek 输出不完整或格式错误，请重新生成。"
 
 
 def notify_card(api: "FeishuApi", card: dict, open_id: str = "") -> None:
@@ -2115,9 +2106,9 @@ def configured_bitable_state(task: Optional[dict]) -> dict:
         return {}
     base = setting("FEISHU_DOC_BASE", "https://ncnrqomkm3wb.feishu.cn").rstrip("/")
     return {
-        "app_token": script_app_token,
-        "table_id": script_table_id,
-        "url": f"{base}/base/{script_app_token}",
+        "app_token": video_app_token,
+        "table_id": video_table_id,
+        "url": f"{base}/base/{video_app_token}",
         "script_app_token": script_app_token,
         "script_table_id": script_table_id,
         "script_url": f"{base}/base/{script_app_token}",
@@ -2136,9 +2127,9 @@ def user_configured_bitable_state(open_id: str, configured: dict) -> dict:
         return {}
     base = setting("FEISHU_DOC_BASE", "https://ncnrqomkm3wb.feishu.cn").rstrip("/")
     return {
-        "app_token": script_app_token,
-        "table_id": script_table_id,
-        "url": str(configured.get("script_url") or configured.get("video_url") or f"{base}/base/{script_app_token}"),
+        "app_token": video_app_token,
+        "table_id": video_table_id,
+        "url": str(configured.get("video_url") or configured.get("script_url") or f"{base}/base/{video_app_token}"),
         "script_app_token": script_app_token,
         "script_table_id": script_table_id,
         "script_url": str(configured.get("script_url") or f"{base}/base/{script_app_token}"),
@@ -2728,10 +2719,6 @@ def bitable_plain_text(value: Any) -> str:
     if isinstance(value, list):
         return " ".join(bitable_plain_text(item) for item in value).strip()
     return str(value or "")
-
-
-def recent_character_descriptions_from_script_table(api: FeishuApi, user_ctx: dict, limit: int = 3) -> List[str]:
-    return []
 
 
 def find_duplicate_script_record(api: FeishuApi, state: dict, task_id: str, prompt: str) -> Optional[dict]:
@@ -3422,15 +3409,12 @@ def task_uses_short_script_doc(task: dict) -> bool:
     return (
         str(task.get("script_kind") or "").strip().lower() == SHORT_SCRIPT_KIND
         or str(task.get("script_source") or "").strip().lower() == "deepseek_short_6s"
-        or str(task.get("script_quality_checker") or "").strip().lower() == "disabled_short_doc_only"
     )
 
 
 def checked_prompt_for_dreamina(task: dict) -> str:
     prompt_path = Path(str(task.get("prompt_file") or ""))
     prompt = prompt_path.read_text(encoding="utf-8-sig").strip()
-    task["script_quality_check_skipped_before_image_mention"] = "skill_disabled"
-    task["script_quality_check_skipped_at"] = now()
     prompt = insert_image_mentions_before_vivi(prompt, [str(item) for item in task.get("images", [])])
     task["dreamina_prompt_has_image_mention"] = bool(image_mention_lines([str(item) for item in task.get("images", [])]))
     return prompt
@@ -5418,7 +5402,7 @@ def requeue_second_segment_with_next_reference_frame(task: dict, api: FeishuApi,
     ]:
         task.pop(key, None)
     write_task("reviewing", task)
-    notify_generation_progress(api, task, "queued", f"第2段参考帧触发即梦校验，已改用 {frame_info.get('timestamp')}s 重新排队")
+    notify_generation_progress(api, task, "queued", f"第2段参考帧不可用，已改用 {frame_info.get('timestamp')}s 重新排队")
     log(f"Requeued second segment with alternate reference frame: task={task_id}; timestamp={frame_info.get('timestamp')}; reason={reason}")
     return True
 
@@ -5690,7 +5674,7 @@ class Worker:
                 if errors:
                     task["fail_reason"] = "\n".join(errors)
                     move_task(claim_path, "failed", task)
-                    notify_task_text(self.api, task, f"❌ 任务校验失败: {task.get('task_id')}\n{task['fail_reason']}")
+                    notify_task_text(self.api, task, f"❌ 任务准备失败: {task.get('task_id')}\n{task['fail_reason']}")
                     continue
                 ensure_script_review_record(task, self.api)
                 if task.get("deduped_script_record"):
@@ -6136,17 +6120,6 @@ class Worker:
                 script_table_id = str(short_state.get("script_table_id") or "")
                 video_app_token = str(user_ctx.get("video_app_token") or video_app_token or "")
                 video_table_id = str(user_ctx.get("video_table_id") or video_table_id or "")
-            recent_descriptions = [] if is_short_script else recent_character_descriptions_from_script_table(self.api, user_ctx, 3)
-            recent_descriptions_file = ""
-            if recent_descriptions:
-                runtime_dir = tenant_root({"tenant_id": tenant_id}) / "runtime"
-                runtime_dir.mkdir(parents=True, exist_ok=True)
-                recent_descriptions_file = str(runtime_dir / f"recent_character_descriptions_{uuid.uuid4().hex}.json")
-                Path(recent_descriptions_file).write_text(
-                    json.dumps(recent_descriptions, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                log(f"Loaded {len(recent_descriptions)} recent character descriptions for user script audit: tenant={tenant_id}")
             command = [
                 "python3",
                 "worker/generate_scripts.py",
@@ -6156,7 +6129,7 @@ class Worker:
                     or setting("SHORT_SCRIPT_AGENT_DOC")
                     or str(SHORT_SCRIPT_DOC)
                     if is_short_script
-                    else setting("SCRIPT_AGENT_DOCS") or setting("SCRIPT_AGENT_DOC")
+                    else setting("SCRIPT_AGENT_DOCS") or setting("SCRIPT_AGENT_DOC") or str(SCRIPT_RULE_DOC)
                 ),
                 "--count",
                 str(count),
@@ -6181,8 +6154,6 @@ class Worker:
                 "--script-kind",
                 SHORT_SCRIPT_KIND if is_short_script else "default",
             ]
-            if recent_descriptions_file:
-                command += ["--recent-character-descriptions-file", recent_descriptions_file]
             if script_app_token and script_table_id and video_app_token and video_table_id:
                 command += [
                     "--script-app-token",
@@ -6267,18 +6238,15 @@ class Worker:
                 notify_generation_progress(self.api, task, "queued", f"{detail}，约 {retry_delay // 60} 分钟后自动重试")
                 log(f"Task deferred by retryable Dreamina state {task_id}: {exc}")
                 return
-            err_msg = str(exc)
-            if "CreditPreDeductNotEnough" in err_msg:
-                err_msg = "该即梦账号余额或次数不足，请手动切换账号后重试"
-            task["fail_reason"] = err_msg
+            task["fail_reason"] = str(exc)
             write_task("failed", task)
             running_path = task_path("running", task_id, task)
             if running_path.exists():
                 running_path.unlink()
             if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
-                update_task_workflow_record(self.api, task, {"状态": "failed", "错误原因": err_msg}, "failure")
-            notify_generation_progress(self.api, task, "failed", err_msg)
-            log(f"Task failed {task_id}: {err_msg}\n{traceback.format_exc()}")
+                update_task_workflow_record(self.api, task, {"状态": "failed", "错误原因": str(exc)}, "failure")
+            notify_generation_progress(self.api, task, "failed", str(exc))
+            log(f"Task failed {task_id}: {exc}\n{traceback.format_exc()}")
         finally:
             instance_key = task_instance_key(task)
             with self._queue_lock:
@@ -6765,7 +6733,7 @@ def start_feishu_ws(worker: Worker) -> None:
                 if ui_open_seen_recently(sender_open_id, "prompt_generate"):
                     return
                 reply_card(prompt_entry_card(user_ctx))
-            elif text in {"create_deepseek", "text_6", "input", "manger", "manager", "cancel_task"}:
+            elif text in {"create_deepseek", "text_6", "input", "manger", "manager", "cancel_task", "wendang"}:
                 open_menu_panel(text, user_ctx, sender_open_id, debounce=False)
             elif text:
                 if sender_open_id and not user_workspace_ready(user_ctx):

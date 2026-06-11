@@ -227,57 +227,6 @@ def normalize_items(data: List[dict]) -> List[dict]:
     return normalized
 
 
-def checker_enabled() -> bool:
-    return False
-
-
-def checker_feedback(results: List[dict], batch: dict) -> str:
-    lines: List[str] = []
-    if batch.get("failures"):
-        lines.append("Batch failures:")
-        for failure in batch.get("failures") or []:
-            lines.append(f"- {failure.get('rule')}: {failure.get('quote')}")
-    for result in results:
-        if result.get("status") == "PASS":
-            continue
-        lines.append(f"Script {result.get('index')} failed:")
-        for failure in result.get("failures") or []:
-            lines.append(f"- {failure.get('rule')}: {failure.get('quote')}")
-    return "\n".join(lines).strip()
-
-
-def load_recent_character_descriptions(path: str) -> List[str]:
-    if not path:
-        return []
-    source = Path(path).expanduser()
-    if not source.exists():
-        return []
-    try:
-        data = json.loads(source.read_text(encoding="utf-8-sig"))
-    except json.JSONDecodeError:
-        data = [line.strip() for line in source.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
-    if isinstance(data, dict):
-        data = data.get("descriptions") or data.get("items") or []
-    if not isinstance(data, list):
-        return []
-    descriptions: List[str] = []
-    for item in data:
-        text = str(item or "").strip()
-        if text:
-            descriptions.append(text)
-    return descriptions
-
-
-def audit_scripts(
-    items: List[dict],
-    strict_batch: bool = True,
-    recent_character_descriptions: Optional[List[str]] = None,
-    character_similarity_threshold: float = 0.72,
-) -> tuple[List[dict], List[dict], dict, str]:
-    batch = {"status": "PASS", "hook_counts": {}, "failures": []}
-    return items, [], batch, ""
-
-
 FEW_SHOT_EXAMPLES = ""
 
 
@@ -303,7 +252,7 @@ def build_user_prompt(count: int, duration: int, brief: str, character_mode: str
 }}
 
 生成前自检：
-- 每条 script 必须遵守 system message 中的当前 md 文档，不要引用任何旧 checker 或旧 skill 规则。
+- 每条 script 必须遵守 system message 中的当前 md 文档。
 - 每条 script 是否包含 `=vivi`、`人物描述：`、`环境描述：`、时间段分镜。
 - 不要输出编号短口播，不要输出广告口播，不要输出“Caption/CTA/总结/表格”。
 - dialogue_cn 只能包含对白翻译，格式如 “Girl：……\\nVivi：……”，不要写总结。
@@ -358,7 +307,7 @@ def deepseek_once(
     if setting("DEEPSEEK_FEW_SHOT", "0") != "0":
         user_prompt = f"{FEW_SHOT_EXAMPLES}\n\n{user_prompt}"
     if feedback:
-        user_prompt += f"\n\n上一次输出未通过校验，请只修正问题并重新输出完整 JSON 数组。校验错误：\n{feedback}"
+        user_prompt += f"\n\n上一次输出没有解析成可用 JSON，请只修正问题并重新输出完整 JSON 数组。解析问题：\n{feedback}"
     payload = {
         "model": model,
         "temperature": float(setting("DEEPSEEK_TEMPERATURE", "0.9")),
@@ -385,39 +334,41 @@ def call_deepseek(
     duration: int,
     brief: str,
     character_mode: str = "",
-    recent_character_descriptions: Optional[List[str]] = None,
-    character_similarity_threshold: float = 0.72,
     script_kind: str = "default",
 ) -> List[dict]:
     max_rounds = max(1, int(setting("DEEPSEEK_REWRITE_ATTEMPTS", "2")) + 1)
+    batch_size = max(1, min(10, int(float(setting("DEEPSEEK_SCRIPT_BATCH_SIZE", "5")))))
     last_error: Optional[Exception] = None
     passed_items: List[dict] = []
-    for _ in range(max_rounds):
+    attempts_without_progress = 0
+    max_total_attempts = max_rounds * max(1, (count + batch_size - 1) // batch_size)
+    while len(passed_items) < count and attempts_without_progress < max_total_attempts:
         remaining = count - len(passed_items)
-        if remaining <= 0:
-            return passed_items[:count]
+        request_count = min(remaining, batch_size)
         try:
-            candidate_multiplier = max(1, int(float(setting("DEEPSEEK_CANDIDATE_MULTIPLIER", "2"))))
-            candidate_count = min(20, max(remaining, remaining * candidate_multiplier, remaining + 2))
-            scripts = deepseek_once(agent_doc, candidate_count, duration, brief, character_mode, "", script_kind)
+            scripts = deepseek_once(agent_doc, request_count, duration, brief, character_mode, "", script_kind)
             if scripts:
-                passed_items.extend(scripts)
-                if len(passed_items) >= count:
-                    return passed_items[:count]
+                before = len(passed_items)
+                passed_items.extend(scripts[:remaining])
+                attempts_without_progress = 0 if len(passed_items) > before else attempts_without_progress + 1
+                continue
             last_error = RuntimeError(
-                f"DeepSeek returned only {len(scripts)} parseable scripts; requested {remaining}."
+                f"DeepSeek returned only {len(scripts)} parseable scripts; requested {request_count}."
             )
         except Exception as exc:
             last_error = exc
+        attempts_without_progress += 1
+    if len(passed_items) >= count:
+        return passed_items[:count]
     if passed_items:
         print(
-            f"WARNING: DeepSeek produced {len(passed_items)} compliant scripts; requested {count}. "
-            "Proceeding with compliant scripts instead of failing the whole batch.",
+            f"WARNING: DeepSeek produced {len(passed_items)} parseable scripts; requested {count}. "
+            "Proceeding with parseable scripts instead of failing the whole batch.",
             file=sys.stderr,
         )
         return passed_items[:count]
     raise RuntimeError(
-        f"DeepSeek output produced only {len(passed_items)} compliant scripts; requested {count}. Last error: {last_error}"
+        f"DeepSeek output produced only {len(passed_items)} parseable scripts; requested {count}. Last error: {last_error}"
     ) from last_error
 
 
@@ -498,8 +449,6 @@ def create_task(
         "image_suggestion": variant,
         "image_library": str(image_dir),
         "script_source": "deepseek_short_6s" if is_short_script else "deepseek",
-        "script_quality_checker": "disabled",
-        "script_quality_checked_at": datetime.now().isoformat(timespec="seconds"),
         "script_kind": "short_6s" if is_short_script else "default",
         "generation_mode": generation_mode,
         "dialogue_translation": str(script_item.get("dialogue_cn") or ""),
@@ -531,7 +480,7 @@ def create_task(
     if auto_approve:
         task["card_approved"] = True
         task["card_approved_at"] = datetime.now().isoformat(timespec="seconds")
-        task["auto_approved_by"] = "skill_disabled"
+        task["auto_approved_by"] = "direct_generate"
     path = task_dir / f"{task_id}.json"
     path.write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
@@ -571,19 +520,13 @@ def main() -> int:
         "--generation-mode",
         default="direct_generate",
         choices=["direct_generate", "write_table"],
-        help="direct_generate auto-approves checked scripts; write_table only writes them to Feishu for manual generation.",
+        help="direct_generate auto-approves scripts; write_table only writes them to Feishu for manual generation.",
     )
     parser.add_argument(
         "--script-kind",
         default="default",
         choices=["default", "short_6s"],
-        help="Generation/checking profile for the produced scripts.",
-    )
-    parser.add_argument("--recent-character-descriptions-file", default="", help="JSON/text file containing recent character descriptions to avoid.")
-    parser.add_argument(
-        "--character-similarity-threshold",
-        default=setting("CHARACTER_DESCRIPTION_SIMILARITY_THRESHOLD", "0.72"),
-        help="Reject character descriptions with similarity >= this threshold.",
+        help="Generation profile for the produced scripts.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print generated scripts without writing tasks.")
     args = parser.parse_args()
@@ -598,15 +541,12 @@ def main() -> int:
     if args.owner_open_id and not args.jimeng_account.strip():
         raise SystemExit("Missing Jimeng account. Configure SHARED_JIMENG_ACCOUNT or save a personal Jimeng profile.")
 
-    recent_character_descriptions = load_recent_character_descriptions(args.recent_character_descriptions_file)
     scripts = call_deepseek(
         agent_doc,
         count,
         script_duration,
         args.brief,
         args.character_mode,
-        recent_character_descriptions,
-        float(args.character_similarity_threshold),
         args.script_kind,
     )
     if len(scripts) < count:

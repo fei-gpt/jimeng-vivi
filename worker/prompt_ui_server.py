@@ -171,7 +171,6 @@ HTML = r"""<!doctype html>
             <label for="character_mode">角色选择</label>
             <select id="character_mode" name="character_mode">
               <option value="single_vivi" selected>1. vivi</option>
-              <option value="bree_sunny">2. bree, sunny</option>
             </select>
           </div>
           <div>
@@ -234,7 +233,7 @@ HTML = r"""<!doctype html>
     <aside class="side">
       <h2>当前链路</h2>
       <div class="kv"><b>文案长度</b>15s 或 30s，只影响 DeepSeek 生成的分镜脚本长度</div>
-      <div class="kv"><b>角色选择</b>1.vivi 生成单角色；2.bree,sunny 生成双角色并匹配四张图</div>
+      <div class="kv"><b>角色选择</b>仅支持 1.vivi 单角色</div>
       <div class="kv"><b>视频参数</b>即梦生成使用当前选中的模型 / 9:16 / 720p</div>
       <div class="kv"><b>人工确认</b>文案写入文案库，飞书表格确认后再生成视频</div>
       <div class="kv"><b>表格入口</b><span id="links">读取中...</span></div>
@@ -375,9 +374,9 @@ def build_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     count = max(1, min(20, int(float(data.get("count") or 1))))
     script_duration = normalize_script_duration(data.get("script_duration"))
     character_mode = clean_text(data.get("character_mode")).lower() or "single_vivi"
-    if character_mode not in {"single_vivi", "bree_sunny"}:
+    if character_mode not in {"single_vivi"}:
         character_mode = "single_vivi"
-    image_variant = "all" if character_mode == "bree_sunny" else "auto"
+    image_variant = "auto"
     user_ctx = load_default_user_context()
     return {
         "count": count,
