@@ -3759,6 +3759,8 @@ def generation_progress_card(task: dict, status: str = "running", detail: str = 
     if queued_behind:
         lines.append(f"**前序任务** {compact_task_title(queued_behind)}")
     if detail:
+        if status == "failed":
+            detail = humanize_error(detail)
         lines.append(f"**说明** {detail}")
     return {
         "config": {"wide_screen_mode": False},
@@ -5001,6 +5003,33 @@ def clean_dreamina_error(output: str, log_file: Optional[Path] = None) -> str:
     return cleaned or "即梦 CLI 退出但没有返回明确错误。"
 
 
+def humanize_error(message: object) -> str:
+    raw = str(message or "").strip()
+    text = raw.lower()
+    if not raw:
+        return "处理失败，但没有返回明确原因。"
+    if "creditpredeductnotenough" in text or "ret=1006" in text:
+        return "即梦账号额度不足，请充值或切换到有额度的即梦账号后再生成。"
+    if "exceedconcurrencylimit" in text or "exceed concurrency" in text or "ret=1310" in text:
+        return "当前即梦账号并发已满，任务会稍后自动重试。"
+    if (
+        "context deadline exceeded" in text
+        or "client.timeout exceeded" in text
+        or "awaiting headers" in text
+        or "get_history_by_ids" in text
+    ):
+        return "即梦结果查询超时，任务会稍后自动重试。"
+    if "pre-tns check did not pass" in text or "pre_tns" in text:
+        return "即梦内容预检未通过，请调整文案或图片后重新生成。"
+    if "upload phase, no file upload" in text or "upload image" in text:
+        return "即梦图片上传失败，请稍后重试。"
+    if "record was deleted before confirmation" in text:
+        return "对应的飞书表格记录已被删除，无法继续生成。"
+    if "login" in text and ("failed" in text or "expired" in text or "not" in text):
+        return "即梦账号登录状态异常，请重新授权账号。"
+    return raw
+
+
 def is_dreamina_local_task_missing_error(message: str) -> bool:
     text = str(message or "").lower()
     return "record not found" in text or "task " in text and " not found" in text
@@ -6205,7 +6234,7 @@ class Worker:
             )
             log("DeepSeek script generation completed; review cards will be sent by queue scanner.")
         except Exception as exc:
-            notify_text(self.api, f"❌ DeepSeek 脚本生成失败\n原因: {exc}", str((user_ctx or {}).get("owner_open_id") or ""))
+            notify_text(self.api, f"❌ DeepSeek 脚本生成失败\n原因: {humanize_error(exc)}", str((user_ctx or {}).get("owner_open_id") or ""))
             log(f"Generate scripts failed: {exc}\n{traceback.format_exc()}")
 
     def _run_generation_safe(self, task: dict) -> None:
@@ -6245,14 +6274,16 @@ class Worker:
                 notify_generation_progress(self.api, task, "queued", f"{detail}，约 {retry_delay // 60} 分钟后自动重试")
                 log(f"Task deferred by retryable Dreamina state {task_id}: {exc}")
                 return
-            task["fail_reason"] = str(exc)
+            user_reason = humanize_error(exc)
+            task["fail_reason"] = user_reason
+            task["raw_fail_reason"] = str(exc)
             write_task("failed", task)
             running_path = task_path("running", task_id, task)
             if running_path.exists():
                 running_path.unlink()
             if task.get("review_backend") == "bitable" or task.get("review_bitable_record_id") or task.get("script_bitable_record_id"):
-                update_task_workflow_record(self.api, task, {"状态": "failed", "错误原因": str(exc)}, "failure")
-            notify_generation_progress(self.api, task, "failed", str(exc))
+                update_task_workflow_record(self.api, task, {"状态": "failed", "错误原因": user_reason}, "failure")
+            notify_generation_progress(self.api, task, "failed", user_reason)
             log(f"Task failed {task_id}: {exc}\n{traceback.format_exc()}")
         finally:
             instance_key = task_instance_key(task)
