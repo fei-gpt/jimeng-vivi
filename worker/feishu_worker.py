@@ -754,6 +754,11 @@ def recover_interrupted_running_tasks() -> None:
             log(f"Recovered interrupted running task into reviewing queue: {task.get('task_id')}")
         except Exception as exc:
             log(f"Failed to recover running task {path}: {exc}\n{traceback.format_exc()}")
+    cleanup_stale_jimeng_account_locks()
+
+
+def cleanup_stale_jimeng_account_locks() -> List[dict]:
+    cleaned: List[dict] = []
     for path in (LOCKS / "jimeng").glob("*.lock"):
         try:
             try:
@@ -766,6 +771,7 @@ def recover_interrupted_running_tasks() -> None:
             if not locked_task_running:
                 path.unlink()
                 log(f"Removed stale Jimeng account lock with no running task: {path.name}; task={locked_task_id or '-'}")
+                cleaned.append({"lock": path.name, "task_id": locked_task_id, "reason": "no_running_task"})
                 continue
             pid = data.get("pid")
             alive = False
@@ -780,8 +786,10 @@ def recover_interrupted_running_tasks() -> None:
                 continue
             path.unlink()
             log(f"Removed stale Jimeng account lock: {path.name}")
+            cleaned.append({"lock": path.name, "task_id": locked_task_id, "reason": "dead_pid"})
         except Exception as exc:
             log(f"Failed to remove stale Jimeng account lock {path}: {exc}")
+    return cleaned
 
 
 def clamp_duration(value: Any) -> int:
@@ -6545,13 +6553,16 @@ def start_feishu_ws(worker: Worker) -> None:
             return {"type": "success", "content": "已打开账号管理"}
         if action in {"cancel_task", "menu_cancel_task"}:
             def cancel_waiting_async() -> None:
+                cleaned_locks = cleanup_stale_jimeng_account_locks()
                 cancelled = worker.cancel_waiting_for_user(user_ctx)
-                if cancelled:
+                if cancelled or cleaned_locks:
                     task_ids = "、".join(str(task.get("task_id") or "") for task in cancelled[:5])
                     extra = "" if len(cancelled) <= 5 else f" 等 {len(cancelled)} 个"
+                    lock_line = f"\n已清理陈旧即梦账号锁：{len(cleaned_locks)} 个" if cleaned_locks else ""
+                    task_line = f"\n{task_ids}{extra}" if cancelled else ""
                     notify_text(
                         worker.api,
-                        f"已取消你的待生成任务：{len(cancelled)} 个\n{task_ids}{extra}\n已进入即梦生成中的任务会继续保留。",
+                        f"已取消你的待生成任务：{len(cancelled)} 个{task_line}{lock_line}\n已进入即梦生成中的任务会继续保留。",
                         owner_open_id,
                     )
                     return
@@ -6704,11 +6715,14 @@ def start_feishu_ws(worker: Worker) -> None:
                 worker.reject(parts[1], "needs_revision", user_ctx=user_ctx)
             elif text in {"cancel_task", "取消任务", "取消生成", "清空队列"}:
                 def cancel_waiting_from_text_async() -> None:
+                    cleaned_locks = cleanup_stale_jimeng_account_locks()
                     cancelled = worker.cancel_waiting_for_user(user_ctx)
-                    if cancelled:
+                    if cancelled or cleaned_locks:
                         task_ids = "、".join(str(task.get("task_id") or "") for task in cancelled[:8])
                         extra = "" if len(cancelled) <= 8 else f" 等 {len(cancelled)} 个"
-                        reply_text(f"已取消你的待生成任务：{len(cancelled)} 个\n{task_ids}{extra}\n已进入即梦生成中的任务会继续保留。")
+                        lock_line = f"\n已清理陈旧即梦账号锁：{len(cleaned_locks)} 个" if cleaned_locks else ""
+                        task_line = f"\n{task_ids}{extra}" if cancelled else ""
+                        reply_text(f"已取消你的待生成任务：{len(cancelled)} 个{task_line}{lock_line}\n已进入即梦生成中的任务会继续保留。")
                     else:
                         reply_text("当前没有可取消的待生成任务。已进入即梦生成中的任务会继续保留。")
 
@@ -7054,6 +7068,7 @@ def start_feishu_ws(worker: Worker) -> None:
             show_prompt = str(value.get("show_prompt")).lower() == "true" or value.get("show_prompt") is True
             show_dialogue = str(value.get("show_dialogue")).lower() == "true" or value.get("show_dialogue") is True
             if action == "card_cancel_task":
+                cleanup_stale_jimeng_account_locks()
                 task["card_cancelled"] = True
                 task["card_cancelled_at"] = now()
                 task["fail_reason"] = "用户在机器人卡片取消。"
