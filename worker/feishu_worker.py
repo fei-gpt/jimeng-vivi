@@ -41,6 +41,7 @@ USERS_CONFIG = ROOT / "users.json"
 WORKSPACE_INIT_LOCK = threading.Lock()
 ACTION_DEDUPE_LOCK = threading.Lock()
 ACTION_DEDUPE: Dict[str, float] = {}
+JIMENG_CREDIT_CACHE_LOCK = threading.Lock()
 
 MODEL_OPTIONS = [
     ("sd2 fast", "seedance2.0fast"),
@@ -4392,8 +4393,10 @@ def account_switch_card(user_ctx: Optional[dict] = None) -> dict:
     ctx = user_ctx or user_context("")
     accounts = saved_jimeng_accounts_for_user(ctx)
     actions = []
+    credit_lines = []
     for index, account in enumerate(accounts, start=1):
         label = jimeng_account_display_name(account, index)
+        credit_lines.append(f"{index}. {label}：{jimeng_account_credit_text(account)}")
         actions.append({
             "tag": "button",
             "text": {"tag": "plain_text", "content": label},
@@ -4419,7 +4422,10 @@ def account_switch_card(user_ctx: Optional[dict] = None) -> dict:
         "elements": [
             {
                 "tag": "div",
-                "text": {"tag": "lark_md", "content": "点击要使用的账号。"},
+                "text": {
+                    "tag": "lark_md",
+                    "content": "点击要使用的账号。\n\n账号积分：\n" + ("\n".join(credit_lines) if credit_lines else "(暂无账号)"),
+                },
             },
             *rows,
         ],
@@ -4599,11 +4605,85 @@ def jimeng_account_display_name(account_name: str, index: int = 0) -> str:
     return "即梦账号"
 
 
+def parse_jimeng_credit_output(output: str) -> str:
+    text = str(output or "").strip()
+    if not text:
+        return "未返回积分"
+    try:
+        data = json.loads(text)
+        credit = data.get("total_credit")
+        if credit is not None:
+            credit_text = str(int(credit)) if isinstance(credit, (int, float)) else str(credit).strip()
+            vip_level = str(data.get("vip_level") or "").strip()
+            if vip_level:
+                return f"{credit_text} 积分（{vip_level}）"
+            return f"{credit_text} 积分"
+    except Exception:
+        pass
+    match = re.search(r"(?:total_credit|credit|积分|余额)[^\d-]*(-?\d+(?:\.\d+)?)", text, flags=re.IGNORECASE)
+    if match:
+        return f"{match.group(1)} 积分"
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            return line[:80]
+    return "未返回积分"
+
+
+def jimeng_account_credit_text(account_name: str, force: bool = False) -> str:
+    account_name = str(account_name or "").strip()
+    if not account_name:
+        return "未配置"
+    profile_home = jimeng_account_root() / account_name / "home"
+    if not profile_home.exists():
+        return "本地账号不存在"
+    ttl = max(0, int(setting("JIMENG_CREDIT_CACHE_SECONDS", "300") or "300"))
+    meta = read_jimeng_account_meta(account_name)
+    cached = str(meta.get("credit_text") or "").strip()
+    checked_at = float(meta.get("credit_checked_at") or 0)
+    if cached and not force and ttl and time.time() - checked_at < ttl:
+        return cached
+    try:
+        env = dreamina_subprocess_env()
+        env["HOME"] = str(profile_home)
+        proc = subprocess.run(
+            [dreamina_command(), "user_credit"],
+            cwd=str(ROOT),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=max(5, int(setting("JIMENG_CREDIT_QUERY_TIMEOUT_SECONDS", "20") or "20")),
+        )
+        if proc.returncode == 0:
+            credit_text = parse_jimeng_credit_output(proc.stdout)
+            with JIMENG_CREDIT_CACHE_LOCK:
+                write_jimeng_account_meta(account_name, {
+                    "credit_text": credit_text,
+                    "credit_checked_at": time.time(),
+                    "credit_error": "",
+                })
+            return credit_text
+        error_text = (proc.stdout or "").strip().splitlines()
+        credit_text = f"查询失败：{error_text[-1][:40]}" if error_text else "查询失败"
+    except subprocess.TimeoutExpired:
+        credit_text = "查询超时"
+    except Exception as exc:
+        credit_text = f"查询失败：{str(exc)[:40]}"
+    with JIMENG_CREDIT_CACHE_LOCK:
+        write_jimeng_account_meta(account_name, {
+            "credit_text": credit_text,
+            "credit_checked_at": time.time(),
+            "credit_error": credit_text,
+        })
+    return credit_text
+
+
 def jimeng_accounts_text(user_ctx: Optional[dict] = None) -> str:
     accounts = saved_jimeng_accounts_for_user(user_ctx) if user_ctx else saved_jimeng_accounts()
     lines = []
     for index, account in enumerate(accounts, start=1):
-        lines.append(f"{index}. {jimeng_account_display_name(account, index)}")
+        lines.append(f"{index}. {jimeng_account_display_name(account, index)}：{jimeng_account_credit_text(account)}")
     if not lines:
         return "(暂无)"
     return "\n".join(lines)
