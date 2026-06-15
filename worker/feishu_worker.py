@@ -760,6 +760,13 @@ def recover_interrupted_running_tasks() -> None:
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
             except Exception:
                 data = {}
+            locked_task_id = str(data.get("task_id") or "").strip()
+            locked_task_path = find_task(locked_task_id) if locked_task_id else None
+            locked_task_running = bool(locked_task_path and locked_task_path.parent.name == "running")
+            if not locked_task_running:
+                path.unlink()
+                log(f"Removed stale Jimeng account lock with no running task: {path.name}; task={locked_task_id or '-'}")
+                continue
             pid = data.get("pid")
             alive = False
             if isinstance(pid, int) and pid > 0:
