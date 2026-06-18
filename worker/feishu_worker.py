@@ -56,11 +56,14 @@ MODEL_FIELD_OPTIONS = [
 USER_HIDDEN_FIELDS = {"备注", "确认", "运行节点", "认领ID"}
 SHORT_SCRIPT_DOC = ROOT / "deepseek" / "OKIVIVI-6s-current.md"
 SHORT_SCRIPT_KIND = "short_6s"
+SHARE_15S_SCRIPT_DOC = ROOT / "deepseek" / "OKIVIVI-15s-share-current.md"
+SHARE_15S_SCRIPT_KIND = "share_15s"
 SCRIPT_RULE_DOC = ROOT / "deepseek" / "OKIVIVI-feishu-current.md"
 RULE_DOC_PENDING_LOCK = threading.Lock()
 RULE_DOC_PENDING: Dict[str, dict] = {}
 RULE_DOC_TARGETS = {
-    "15": SCRIPT_RULE_DOC,
+    "15_story": SCRIPT_RULE_DOC,
+    "15_share": SHARE_15S_SCRIPT_DOC,
     "6": SHORT_SCRIPT_DOC,
 }
 MODEL_ALIASES = {
@@ -528,14 +531,17 @@ def rule_doc_replace_card(user_ctx: Optional[dict] = None) -> dict:
     rule_text = (
         "请选择要替换的规则文档，然后发送 `.md` 文件。\n\n"
         "识别逻辑：\n"
-        "- 文件名或正文包含 `15s` 或 `30s`：识别为 15s/30s 文档。\n"
+        "- 文件名或正文包含 `15s`/`30s` 且包含 `故事`：识别为 15s-故事文档。\n"
+        "- 文件名或正文包含 `15s` 且包含 `分享`：识别为 15s-分享文档。\n"
         "- 文件名或正文包含 `6s`、`5s`、`7s`、`8s`、`5-8s`、`短文案` 或 `强冲突`：识别为 6s 文档。\n"
+        "- 15s 文档必须写明 `故事` 或 `分享`，否则不会覆盖当前文档。\n"
         "- 无法识别或单项替换类型不匹配时，不会覆盖当前文档。"
     )
     actions = [
-        ("替换15s", "15"),
+        ("替换15s-故事", "15_story"),
+        ("替换15s-分享", "15_share"),
         ("替换6s", "6"),
-        ("两者都替换", "both"),
+        ("全部替换", "all"),
     ]
     return {
         "config": {"wide_screen_mode": True},
@@ -551,7 +557,7 @@ def rule_doc_replace_card(user_ctx: Optional[dict] = None) -> dict:
                     {
                         "tag": "button",
                         "text": {"tag": "plain_text", "content": label},
-                        "type": "primary" if mode == "both" else "default",
+                        "type": "primary" if mode == "all" else "default",
                         "value": {"action": "rule_doc_replace_select", "rule_doc_replace_mode": mode, **card_user_value(ctx)},
                     }
                     for label, mode in actions
@@ -596,32 +602,56 @@ def clear_rule_doc_pending(open_id: str) -> None:
         RULE_DOC_PENDING.pop(str(open_id), None)
 
 
+def rule_doc_kind_label(kind: str) -> str:
+    return {
+        "15_story": "15s-故事",
+        "15_share": "15s-分享",
+        "6": "6s",
+        "all": "全部",
+    }.get(str(kind or ""), str(kind or "未知"))
+
+
 def classify_rule_doc(path: Path, text: str) -> Tuple[str, str]:
     name = path.name.lower()
     body = str(text or "").lower()
 
-    def detect(source: str) -> Tuple[bool, bool]:
+    def detect(source: str) -> Tuple[bool, bool, bool, bool]:
         compact = re.sub(r"\s+", "", source)
         is_15 = "15s" in compact or "30s" in compact
+        is_share = "分享" in source
+        is_story = "故事" in source
         is_6 = bool(re.search(r"(?<!\d)(?:5s|6s|7s|8s)(?!\d)", compact)) or "5-8s" in compact
         is_6 = is_6 or ("短文案" in source) or ("强冲突" in source)
-        return is_15, is_6
+        return is_15, is_story, is_share, is_6
 
+    unresolved_15_reason = ""
+    mixed_reason = ""
     for label, source in (("文件名", name), ("正文", body)):
-        is_15, is_6 = detect(source)
-        if is_15 and not is_6:
-            return "15", f"{label}包含 15s/30s"
+        is_15, is_story, is_share, is_6 = detect(source)
         if is_6 and not is_15:
             return "6", f"{label}包含短文案秒数或标识"
+        if is_15 and not is_6:
+            if is_story and not is_share:
+                return "15_story", f"{label}包含 15s/30s + 故事"
+            if is_share and not is_story:
+                return "15_share", f"{label}包含 15s + 分享"
+            if is_story and is_share:
+                mixed_reason = f"{label}同时包含 故事 和 分享，无法自动判断"
+                continue
+            unresolved_15_reason = f"{label}包含 15s/30s，但缺少 故事 或 分享 归属关键词"
+            continue
         if is_15 and is_6:
-            return "", f"{label}同时包含 15s/30s 和 5-8s/短文案标识，无法自动判断"
+            mixed_reason = f"{label}同时包含 15s/30s 和 5-8s/短文案标识，无法自动判断"
+            continue
+    if mixed_reason:
+        return "", mixed_reason
+    if unresolved_15_reason:
+        return "", unresolved_15_reason
     return "", "文件名和正文都没有可识别的秒数标识"
 
 
 def cleanup_rule_doc_residue() -> None:
     paths = [
-        SCRIPT_RULE_DOC,
-        SHORT_SCRIPT_DOC,
         ROOT / "deepseek" / "OKIVIVI-text-zong.md",
         ROOT / "deepseek" / "OKIVIVI-text-assistive.md",
         ROOT / "deepseek" / "OKIVIVI-创作松动版一致性规则提取.md",
@@ -643,26 +673,37 @@ def cleanup_rule_doc_residue() -> None:
             shutil.rmtree(path)
 
 
-def replace_rule_docs(fifteen_source: Optional[Path] = None, short_source: Optional[Path] = None) -> dict:
+def replace_rule_docs(
+    story_source: Optional[Path] = None,
+    short_source: Optional[Path] = None,
+    share_source: Optional[Path] = None,
+) -> dict:
     temp_dir = Path("/tmp") / f"okivivi_rule_replace_{uuid.uuid4().hex}"
     temp_dir.mkdir(parents=True, exist_ok=True)
     try:
         staged_15 = temp_dir / "OKIVIVI-feishu-current.md"
+        staged_share = temp_dir / "OKIVIVI-15s-share-current.md"
         staged_6 = temp_dir / "OKIVIVI-6s-current.md"
-        source_15 = Path(fifteen_source) if fifteen_source else SCRIPT_RULE_DOC
+        source_15 = Path(story_source) if story_source else SCRIPT_RULE_DOC
+        source_share = Path(share_source) if share_source else SHARE_15S_SCRIPT_DOC
         source_6 = Path(short_source) if short_source else SHORT_SCRIPT_DOC
         if not source_15.exists():
-            raise RuntimeError(f"15s/30s 当前规则文档不存在: {source_15}")
+            raise RuntimeError(f"15s-故事 当前规则文档不存在: {source_15}")
+        if not source_share.exists():
+            raise RuntimeError(f"15s-分享 当前规则文档不存在: {source_share}")
         if not source_6.exists():
             raise RuntimeError(f"6s 当前规则文档不存在: {source_6}")
         shutil.copyfile(source_15, staged_15)
+        shutil.copyfile(source_share, staged_share)
         shutil.copyfile(source_6, staged_6)
         cleanup_rule_doc_residue()
         SCRIPT_RULE_DOC.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(staged_15, SCRIPT_RULE_DOC)
+        shutil.copyfile(staged_share, SHARE_15S_SCRIPT_DOC)
         shutil.copyfile(staged_6, SHORT_SCRIPT_DOC)
         return {
-            "15": hashlib.sha256(SCRIPT_RULE_DOC.read_bytes()).hexdigest(),
+            "15_story": hashlib.sha256(SCRIPT_RULE_DOC.read_bytes()).hexdigest(),
+            "15_share": hashlib.sha256(SHARE_15S_SCRIPT_DOC.read_bytes()).hexdigest(),
             "6": hashlib.sha256(SHORT_SCRIPT_DOC.read_bytes()).hexdigest(),
         }
     finally:
@@ -4000,7 +4041,7 @@ def send_startup_menu(api: FeishuApi) -> None:
             log(f"Startup menu skipped for {open_id}: {exc}")
 
 
-def prompt_entry_card(user_ctx: Optional[dict] = None, short_mode: bool = False) -> dict:
+def prompt_entry_card(user_ctx: Optional[dict] = None, short_mode: bool = False, share_mode: bool = False) -> dict:
     default_model = "seedance2.0fast"
     duration_options = (
         [
@@ -4014,7 +4055,7 @@ def prompt_entry_card(user_ctx: Optional[dict] = None, short_mode: bool = False)
         ]
     )
     duration_initial = "6" if short_mode else "15"
-    submit_action = "short_prompt_form_submit" if short_mode else "prompt_form_submit"
+    submit_action = "short_prompt_form_submit" if short_mode else ("prompt_share_form_submit" if share_mode else "prompt_form_submit")
     count_select = {
         "tag": "select_static",
         "placeholder": {"tag": "plain_text", "content": "条数"},
@@ -4071,7 +4112,14 @@ def prompt_entry_card(user_ctx: Optional[dict] = None, short_mode: bool = False)
     return {
         "config": {"wide_screen_mode": False},
         "header": {
-            "title": {"tag": "plain_text", "content": "OKIVIVI 短文案生成入口" if short_mode else "OKIVIVI 文案生成入口"},
+            "title": {
+                "tag": "plain_text",
+                "content": (
+                    "OKIVIVI 短文案生成入口"
+                    if short_mode
+                    else ("OKIVIVI 15s-分享文案生成入口" if share_mode else "OKIVIVI 文案生成入口")
+                ),
+            },
             "template": "blue",
         },
         "elements": [
@@ -6205,6 +6253,7 @@ class Worker:
             user_ctx = user_ctx or user_context("")
             script_kind = str(script_kind or "default").strip().lower()
             is_short_script = script_kind == SHORT_SCRIPT_KIND
+            is_share_script = script_kind == SHARE_15S_SCRIPT_KIND
             count = max(1, min(20, int(count)))
             duration = clamp_duration(duration)
             script_duration_raw = int(script_duration or duration or 15)
@@ -6251,17 +6300,17 @@ class Worker:
                 script_table_id = str(short_state.get("script_table_id") or "")
                 video_app_token = str(user_ctx.get("video_app_token") or video_app_token or "")
                 video_table_id = str(user_ctx.get("video_table_id") or video_table_id or "")
+            if is_short_script:
+                agent_docs = setting("SHORT_SCRIPT_AGENT_DOCS") or setting("SHORT_SCRIPT_AGENT_DOC") or str(SHORT_SCRIPT_DOC)
+            elif is_share_script:
+                agent_docs = setting("SHARE_15S_SCRIPT_AGENT_DOCS") or setting("SHARE_15S_SCRIPT_AGENT_DOC") or str(SHARE_15S_SCRIPT_DOC)
+            else:
+                agent_docs = setting("SCRIPT_AGENT_DOCS") or setting("SCRIPT_AGENT_DOC") or str(SCRIPT_RULE_DOC)
             command = [
                 "python3",
                 "worker/generate_scripts.py",
                 "--agent-docs",
-                (
-                    setting("SHORT_SCRIPT_AGENT_DOCS")
-                    or setting("SHORT_SCRIPT_AGENT_DOC")
-                    or str(SHORT_SCRIPT_DOC)
-                    if is_short_script
-                    else setting("SCRIPT_AGENT_DOCS") or setting("SCRIPT_AGENT_DOC") or str(SCRIPT_RULE_DOC)
-                ),
+                agent_docs,
                 "--count",
                 str(count),
                 "--duration",
@@ -6283,7 +6332,7 @@ class Worker:
                 "--generation-mode",
                 generation_mode,
                 "--script-kind",
-                SHORT_SCRIPT_KIND if is_short_script else "default",
+                SHORT_SCRIPT_KIND if is_short_script else (SHARE_15S_SCRIPT_KIND if is_share_script else "default"),
             ]
             if script_app_token and script_table_id and video_app_token and video_table_id:
                 command += [
@@ -6610,6 +6659,16 @@ def start_feishu_ws(worker: Worker) -> None:
                 return {"type": "success", "content": "已打开文案生成"}
             notify_card(worker.api, prompt_entry_card(user_ctx), owner_open_id)
             return {"type": "success", "content": "已打开文案生成"}
+        if action in {"15s_share", "menu_prompt_generate_share"}:
+            if owner_open_id and not user_workspace_ready(user_ctx):
+                notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
+                return {"type": "error", "content": "请先初始化工作区"}
+            if prompt_submit_seen_recently(owner_open_id):
+                return {"type": "success", "content": "文案生成已在处理中"}
+            if debounce and ui_open_seen_recently(owner_open_id, "prompt_generate_share"):
+                return {"type": "success", "content": "已打开15s-分享文案生成"}
+            notify_card(worker.api, prompt_entry_card(user_ctx, share_mode=True), owner_open_id)
+            return {"type": "success", "content": "已打开15s-分享文案生成"}
         if action in {"text_6", "menu_prompt_generate_short"}:
             if owner_open_id and not user_workspace_ready(user_ctx):
                 notify_card(worker.api, workspace_setup_card(user_ctx), owner_open_id)
@@ -6688,44 +6747,54 @@ def start_feishu_ws(worker: Worker) -> None:
             return True
         kind, reason = classify_rule_doc(download_path, text)
         if not kind:
-            reply_text(f"无法识别文档归属：{reason}\n请在文件名或正文中加入 15s/30s，或 6s/5-8s/短文案/强冲突 标识。")
+            reply_text(
+                f"无法识别文档归属：{reason}\n"
+                "请在文件名或正文中加入：15s/30s + 故事，或 15s + 分享，或 6s/5-8s/短文案/强冲突。"
+            )
             return True
         mode = str(pending.get("mode") or "")
-        if mode in {"15", "6"} and kind != mode:
-            label = "15s/30s" if mode == "15" else "6s"
-            reply_text(f"当前选择的是替换{label}，但上传文档被识别为{'15s/30s' if kind == '15' else '6s'}：{reason}\n未覆盖当前文档。")
+        if mode in {"15_story", "15_share", "6"} and kind != mode:
+            reply_text(f"当前选择的是替换{rule_doc_kind_label(mode)}，但上传文档被识别为{rule_doc_kind_label(kind)}：{reason}\n未覆盖当前文档。")
             return True
-        if mode == "both":
+        if mode == "all":
             pending = update_rule_doc_pending_file(sender_open_id, kind, download_path)
             files = pending.get("files") or {}
-            if "15" not in files or "6" not in files:
-                missing = "15s/30s" if "15" not in files else "6s"
-                reply_text(f"已收到{'15s/30s' if kind == '15' else '6s'}文档（{reason}）。请继续上传 {missing} 文档。")
+            required = ["15_story", "15_share", "6"]
+            missing_kinds = [item for item in required if item not in files]
+            if missing_kinds:
+                missing = "、".join(rule_doc_kind_label(item) for item in missing_kinds)
+                reply_text(f"已收到{rule_doc_kind_label(kind)}文档（{reason}）。请继续上传 {missing} 文档。")
                 return True
             try:
-                hashes = replace_rule_docs(Path(files["15"]), Path(files["6"]))
+                hashes = replace_rule_docs(Path(files["15_story"]), Path(files["6"]), Path(files["15_share"]))
             except Exception as exc:
-                log(f"Rule docs replace both failed: {exc}\n{traceback.format_exc()}")
+                log(f"Rule docs replace all failed: {exc}\n{traceback.format_exc()}")
                 reply_text(f"替换失败，当前文档未覆盖：{exc}")
                 return True
             clear_rule_doc_pending(sender_open_id)
             reply_text(
-                "✅ 两份规则文档已替换完成。\n"
-                f"15s/30s hash: {hashes['15']}\n"
+                "✅ 三份规则文档已替换完成。\n"
+                f"15s-故事 hash: {hashes['15_story']}\n"
+                f"15s-分享 hash: {hashes['15_share']}\n"
                 f"6s hash: {hashes['6']}"
             )
             return True
         try:
-            hashes = replace_rule_docs(download_path if kind == "15" else None, download_path if kind == "6" else None)
+            hashes = replace_rule_docs(
+                download_path if kind == "15_story" else None,
+                download_path if kind == "6" else None,
+                download_path if kind == "15_share" else None,
+            )
         except Exception as exc:
             log(f"Rule doc replace failed: {exc}\n{traceback.format_exc()}")
             reply_text(f"替换失败，当前文档未覆盖：{exc}")
             return True
         clear_rule_doc_pending(sender_open_id)
         reply_text(
-            f"✅ {'15s/30s' if kind == '15' else '6s'} 规则文档已替换完成。\n"
+            f"✅ {rule_doc_kind_label(kind)} 规则文档已替换完成。\n"
             f"识别依据：{reason}\n"
-            f"15s/30s hash: {hashes['15']}\n"
+            f"15s-故事 hash: {hashes['15_story']}\n"
+            f"15s-分享 hash: {hashes['15_share']}\n"
             f"6s hash: {hashes['6']}"
         )
         return True
@@ -6782,7 +6851,7 @@ def start_feishu_ws(worker: Worker) -> None:
                     log(f"Skipped whoami reply without sender open_id: {reply[:120]}")
             elif text in {"配置", "初始化", "工作区", "工作区配置", "初始化配置"}:
                 reply_card(workspace_setup_card(user_ctx))
-            elif text in {"替换文档", "wendang"}:
+            elif text in {"文档替换", "替换文档", "0", "wendang"}:
                 if not can_replace_rule_docs(sender_open_id):
                     reply_text("无权限替换全局规则文档。")
                     return
@@ -6872,7 +6941,7 @@ def start_feishu_ws(worker: Worker) -> None:
                 if ui_open_seen_recently(sender_open_id, "prompt_generate"):
                     return
                 reply_card(prompt_entry_card(user_ctx))
-            elif text in {"create_deepseek", "text_6", "input", "manger", "manager", "cancel_task", "wendang"}:
+            elif text in {"create_deepseek", "15s_share", "text_6", "input", "manger", "manager", "cancel_task", "wendang"}:
                 open_menu_panel(text, user_ctx, sender_open_id, debounce=False)
             elif text:
                 if sender_open_id and not user_workspace_ready(user_ctx):
@@ -6900,7 +6969,7 @@ def start_feishu_ws(worker: Worker) -> None:
                     "content": "这张卡片属于其他用户，请在自己的会话里重新打开菜单。",
                 }
             })
-        if value and str(value.get("action") or "") in {"create_deepseek", "text_6", "input", "manger", "manager", "cancel_task", "wendang"}:
+        if value and str(value.get("action") or "") in {"create_deepseek", "15s_share", "text_6", "input", "manger", "manager", "cancel_task", "wendang"}:
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
             toast = open_menu_panel(str(value.get("action") or ""), user_ctx, owner_open_id, debounce=False)
@@ -6918,15 +6987,21 @@ def start_feishu_ws(worker: Worker) -> None:
             if not can_replace_rule_docs(owner_open_id):
                 return card_response({"toast": {"type": "error", "content": "无权限替换全局规则文档"}})
             mode = str(value.get("rule_doc_replace_mode") or "").strip()
-            if mode not in {"15", "6", "both"}:
+            if mode not in {"15_story", "15_share", "6", "all"}:
                 return card_response({"toast": {"type": "error", "content": "未知替换类型"}})
             set_rule_doc_pending(owner_open_id, mode)
-            label = {"15": "15s/30s", "6": "6s", "both": "15s/30s 和 6s"}[mode]
+            label = {
+                "15_story": "15s-故事",
+                "15_share": "15s-分享",
+                "6": "6s",
+                "all": "15s-故事、15s-分享 和 6s",
+            }[mode]
             worker.api.text_to_open_id(
                 owner_open_id,
                 "请发送 `.md` 文档给机器人。\n"
                 f"当前选择：替换 {label}\n"
-                "识别规则：15s/30s 文档需在文件名或正文包含 15s 或 30s；"
+                "识别规则：15s-故事文档需包含 15s/30s 和 故事；"
+                "15s-分享文档需包含 15s 和 分享；"
                 "6s 文档需包含 6s、5s、7s、8s、5-8s、短文案或强冲突。",
             )
             return card_response({"toast": {"type": "success", "content": "请上传 .md 文档"}})
@@ -7013,7 +7088,7 @@ def start_feishu_ws(worker: Worker) -> None:
             signature = request_signature("setup_workspace", value, ["workspace_id"])
             state = USER_REQUESTS.submit(owner_open_id, signature, "初始化工作区", setup_workspace_async)
             return card_response(request_toast(state, "已开始初始化，完成后会私聊通知你"))
-        if value and value.get("action") in {"prompt_generate", "prompt_form_submit", "short_prompt_form_submit"}:
+        if value and value.get("action") in {"prompt_generate", "prompt_form_submit", "prompt_share_form_submit", "short_prompt_form_submit"}:
             user_ctx = card_user_context(value)
             owner_open_id = str(user_ctx.get("owner_open_id") or "").strip()
             if not owner_open_id:
@@ -7029,6 +7104,7 @@ def start_feishu_ws(worker: Worker) -> None:
                     }
                 })
             is_short_prompt = value.get("action") == "short_prompt_form_submit"
+            is_share_prompt = value.get("action") == "prompt_share_form_submit"
             count = int(value.get("count") or 1)
             script_duration = int(value.get("script_duration") or (6 if is_short_prompt else 15))
             if is_short_prompt and script_duration not in {5, 6, 7, 8}:
@@ -7051,21 +7127,25 @@ def start_feishu_ws(worker: Worker) -> None:
                     generation_mode,
                     "feishu_bot",
                     user_ctx,
-                    SHORT_SCRIPT_KIND if is_short_prompt else "default",
+                    SHORT_SCRIPT_KIND if is_short_prompt else (SHARE_15S_SCRIPT_KIND if is_share_prompt else "default"),
                     image_variant,
                 )
 
             signature = request_signature(
-                "short_prompt_generate" if is_short_prompt else "prompt_generate",
+                "short_prompt_generate" if is_short_prompt else ("prompt_share_generate" if is_share_prompt else "prompt_generate"),
                 value,
                 ["count", "script_duration", "character_mode", "model_version", "generation_mode", "brief"],
             )
-            label = "短时长DeepSeek文案生成" if is_short_prompt else "DeepSeek文案生成"
+            label = "短时长DeepSeek文案生成" if is_short_prompt else ("15s-分享DeepSeek文案生成" if is_share_prompt else "DeepSeek文案生成")
             state = USER_REQUESTS.submit(owner_open_id, signature, label, generate_scripts_async)
             feedback_text = (
                 f"已开始生成 {count} 条 {script_duration}s 短文案，完成后会发送结果。"
                 if is_short_prompt
-                else f"已开始生成 {count} 条 {script_duration}s 文案，完成后会发送结果。"
+                else (
+                    f"已开始生成 {count} 条 {script_duration}s 分享文案，完成后会发送结果。"
+                    if is_share_prompt
+                    else f"已开始生成 {count} 条 {script_duration}s 文案，完成后会发送结果。"
+                )
             )
             if state in {"started", "queued"}:
                 mark_prompt_submit_recent(owner_open_id)

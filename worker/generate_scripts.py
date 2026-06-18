@@ -525,7 +525,7 @@ def main() -> int:
     parser.add_argument(
         "--script-kind",
         default="default",
-        choices=["default", "short_6s"],
+        choices=["default", "short_6s", "share_15s"],
         help="Generation profile for the produced scripts.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print generated scripts without writing tasks.")
