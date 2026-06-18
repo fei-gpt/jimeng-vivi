@@ -439,7 +439,11 @@ def create_task(
     if generation_mode not in {"direct_generate", "write_table"}:
         generation_mode = "direct_generate"
     auto_approve = generation_mode == "direct_generate"
-    is_short_script = str(script_kind or "").strip().lower() == "short_6s"
+    normalized_script_kind = str(script_kind or "default").strip().lower()
+    is_short_script = normalized_script_kind == "short_6s"
+    is_share_script = normalized_script_kind == "share_15s"
+    script_source = "deepseek_short_6s" if is_short_script else ("deepseek_15s_share" if is_share_script else "deepseek")
+    stored_script_kind = "short_6s" if is_short_script else ("share_15s" if is_share_script else "default")
 
     task = {
         "task_id": task_id,
@@ -448,8 +452,8 @@ def create_task(
         "image_source": "manual_bitable",
         "image_suggestion": variant,
         "image_library": str(image_dir),
-        "script_source": "deepseek_short_6s" if is_short_script else "deepseek",
-        "script_kind": "short_6s" if is_short_script else "default",
+        "script_source": script_source,
+        "script_kind": stored_script_kind,
         "generation_mode": generation_mode,
         "dialogue_translation": str(script_item.get("dialogue_cn") or ""),
         "script_batch_id": batch_id,

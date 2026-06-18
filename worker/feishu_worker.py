@@ -3350,6 +3350,7 @@ IMAGE_GROUPS = {
     "blue": ["okivivi-blue.jpg", "okivivi-blue1.jpg"],
     "pink": ["okivivi-pink.jpg", "okivivi-pink1.jpg"],
     "all": ["okivivi-blue.jpg", "okivivi-blue1.jpg", "okivivi-pink.jpg", "okivivi-pink1.jpg"],
+    "package_box": ["okivivi-package-box-1.jpg", "okivivi-package-box-2.jpg"],
 }
 
 
@@ -3387,6 +3388,14 @@ def normalize_task_images(task: dict) -> None:
     if images:
         seen = set()
         task["images"] = [item for item in images if not (item in seen or seen.add(item))]
+    package_images = [
+        normalize_image_path(image, task)
+        for image in task.get("package_box_images", [])
+        if str(image or "").strip()
+    ]
+    if package_images:
+        seen = set()
+        task["package_box_images"] = [item for item in package_images if not (item in seen or seen.add(item))]
 
 
 def resolve_selected_images(selection: str, task: dict) -> List[str]:
@@ -3422,14 +3431,58 @@ def resolve_selected_images(selection: str, task: dict) -> List[str]:
 
 def ensure_task_images_from_suggestion(task: dict) -> None:
     normalize_task_images(task)
-    if task.get("images"):
+    if not task.get("images"):
+        selection = task.get("image_suggestion") or task.get("image_variant") or ""
+        selected = resolve_selected_images(selection, task)
+        if selected:
+            task["images"] = selected
+            task["image_source"] = "bot_card"
+            task["script_image_value"] = selection
+    ensure_share_package_box_images(task)
+
+
+def task_uses_share_15s_doc(task: dict) -> bool:
+    return (
+        str(task.get("script_kind") or "").strip().lower() == SHARE_15S_SCRIPT_KIND
+        or str(task.get("script_source") or "").strip().lower() == "deepseek_15s_share"
+    )
+
+
+def task_prompt_text(task: dict) -> str:
+    prompt_file = str(task.get("prompt_file") or "").strip()
+    if not prompt_file:
+        return ""
+    try:
+        return Path(prompt_file).read_text(encoding="utf-8-sig")
+    except Exception:
+        return ""
+
+
+def prompt_mentions_package_box(prompt: str) -> bool:
+    return "包装盒" in str(prompt or "")
+
+
+def ensure_share_package_box_images(task: dict) -> None:
+    if not task_uses_share_15s_doc(task):
         return
-    selection = task.get("image_suggestion") or task.get("image_variant") or ""
-    selected = resolve_selected_images(selection, task)
-    if selected:
-        task["images"] = selected
-        task["image_source"] = "bot_card"
-        task["script_image_value"] = selection
+    prompt = task_prompt_text(task)
+    if not prompt_mentions_package_box(prompt):
+        return
+    package_images = resolve_selected_images("package_box", task)
+    if not package_images:
+        return
+    task["package_box_images"] = package_images
+    existing = [str(item) for item in task.get("images", []) if str(item or "").strip()]
+    seen = set()
+    merged = []
+    for item in existing + package_images:
+        if item not in seen:
+            seen.add(item)
+            merged.append(item)
+    task["images"] = merged
+    extras = set(task.get("extra_image_groups") or [])
+    extras.add("package_box")
+    task["extra_image_groups"] = sorted(extras)
 
 
 def image_mention_lines(images: List[str]) -> List[str]:
@@ -3447,14 +3500,24 @@ def image_mention_lines(images: List[str]) -> List[str]:
 
 
 def insert_image_mentions_before_vivi(prompt: str, images: List[str]) -> str:
+    return insert_image_mentions_before_marker(prompt, images, "=vivi", prepend_if_missing=True)
+
+
+def insert_image_mentions_before_marker(
+    prompt: str,
+    images: List[str],
+    marker: str,
+    prepend_if_missing: bool = False,
+) -> str:
     lines = image_mention_lines(images)
     if not lines:
         return prompt
     mention_text = "\n".join(lines).strip()
-    marker = "=vivi"
     index = prompt.find(marker)
     if index < 0:
-        return f"{mention_text}\n\n{prompt.lstrip()}"
+        if prepend_if_missing:
+            return f"{mention_text}\n\n{prompt.lstrip()}"
+        return prompt
     before = prompt[:index].rstrip()
     after = prompt[index:].lstrip()
     if mention_text in before[-300:]:
@@ -3470,9 +3533,14 @@ def task_uses_short_script_doc(task: dict) -> bool:
 
 
 def checked_prompt_for_dreamina(task: dict) -> str:
+    ensure_share_package_box_images(task)
     prompt_path = Path(str(task.get("prompt_file") or ""))
     prompt = prompt_path.read_text(encoding="utf-8-sig").strip()
-    prompt = insert_image_mentions_before_vivi(prompt, [str(item) for item in task.get("images", [])])
+    package_images = [str(item) for item in task.get("package_box_images", []) if str(item or "").strip()]
+    package_set = set(package_images)
+    vivi_images = [str(item) for item in task.get("images", []) if str(item or "").strip() and str(item) not in package_set]
+    prompt = insert_image_mentions_before_vivi(prompt, vivi_images)
+    prompt = insert_image_mentions_before_marker(prompt, package_images, "=包装盒", prepend_if_missing=False)
     task["dreamina_prompt_has_image_mention"] = bool(image_mention_lines([str(item) for item in task.get("images", [])]))
     return prompt
 
@@ -3615,6 +3683,7 @@ def promote_script_to_review(task: dict, api: FeishuApi) -> bool:
     task["images"] = selected_images
     task["image_source"] = "script_bitable"
     task["script_image_value"] = script_image_choice
+    ensure_share_package_box_images(task)
     review = create_review_record(task, api, content)
     task["review_backend"] = "bitable"
     task["review_bitable_app_token"] = review["app_token"]
@@ -5938,6 +6007,7 @@ class Worker:
         account = self.account_key(task)
         model = normalize_model(task.get("model_version"))
         task["model_version"] = model
+        ensure_share_package_box_images(task)
         if is_segmented_30s_task(task):
             ensure_segment_prompt_files(task)
         is_parallel_model = model_allows_parallel(model)
