@@ -5788,11 +5788,6 @@ class Worker:
         kind = "短文案" if is_short_script else "文案"
         mode = str(generation_mode or "").strip().lower()
         if mode == "write_table":
-            notify_text(
-                self.api,
-                f"已生成 {generated_count} 条 {script_duration}s {kind}，已写入表格，等待你确认后生成。",
-                target,
-            )
             return
 
         queued_hint = "已提交即梦生成队列。"
